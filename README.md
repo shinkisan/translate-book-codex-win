@@ -72,12 +72,6 @@ clawhub install rainman-translate-book
 git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
 ```
 
-**Option D: Symlink (for development)**
-
-```bash
-git clone https://github.com/deusyu/translate-book.git ~/code/translate-book
-ln -s ~/code/translate-book ~/.claude/skills/translate-book
-```
 
 ### 2. Translate a book
 

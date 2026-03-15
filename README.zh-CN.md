@@ -72,12 +72,6 @@ clawhub install rainman-translate-book
 git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
 ```
 
-**方式 D：符号链接（便于开发）**
-
-```bash
-git clone https://github.com/deusyu/translate-book.git ~/code/translate-book
-ln -s ~/code/translate-book ~/.claude/skills/translate-book
-```
 
 ### 2. 翻译一本书
 
