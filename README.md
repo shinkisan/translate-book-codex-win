@@ -35,7 +35,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 ## Features
 
 - **Parallel subagents** — 8 concurrent translators per batch, each with isolated context
-- **Resumable** — already-translated chunks are skipped on re-run
+- **Resumable** — chunk-level resume; already-translated chunks are skipped on re-run (for metadata/template changes, use a fresh run)
 - **Manifest validation** — SHA-256 hash tracking prevents stale or corrupt outputs from being merged
 - **Multi-format output** — HTML (with floating TOC), DOCX, EPUB, PDF
 - **Multi-language** — zh, en, ja, ko, fr, de, es (extensible)
@@ -54,23 +54,23 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 
 ### 1. Install the skill
 
-**Option A: ClawHub**
+**Option A: npx (recommended)**
 
 ```bash
-npx clawhub install rainman-translate-book
+npx skills add deusyu/translate-book -a claude-code -g
 ```
 
 **Option B: Git clone**
 
 ```bash
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/rainman-translate-book
+git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
 ```
 
 **Option C: Symlink (for development)**
 
 ```bash
-git clone https://github.com/deusyu/translate-book.git ~/code/rainman-translate-book
-ln -s ~/code/rainman-translate-book ~/.claude/skills/rainman-translate-book
+git clone https://github.com/deusyu/translate-book.git ~/code/translate-book
+ln -s ~/code/translate-book ~/.claude/skills/translate-book
 ```
 
 ### 2. Translate a book
@@ -134,6 +134,8 @@ Before merging, the script validates:
 
 Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF.
 
+**Note:** `{book_name}_temp/` is a working directory for a single translation run. If you change the title, author, output language, template, or image assets, either use a fresh temp directory or delete the existing final artifacts (`output.md`, `book*.html`, `book.docx`, `book.epub`, `book.pdf`) before re-running.
+
 ## Project Structure
 
 | File | Purpose |
@@ -154,6 +156,7 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | `Manifest validation failed` | Source chunks changed since splitting — re-run `convert.py` |
 | `Missing source chunk` | Source file deleted — re-run `convert.py` to regenerate |
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |
+| Changed title/template/assets but output didn't update | Delete existing `output.md`, `book*.html`, `book.docx`, `book.epub`, `book.pdf` from the temp dir, then re-run `merge_and_build.py` |
 | `output.md exists but manifest invalid` | Stale output — the script auto-deletes and re-merges |
 | PDF generation fails | Ensure Calibre is installed with PDF output support |
 

@@ -35,7 +35,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 ## 功能特性
 
 - **并行 subagent** — 每批 8 个并发翻译器，各自独立上下文
-- **可续跑** — 重新运行时自动跳过已翻译的 chunk
+- **可续跑** — chunk 级续跑，重新运行时自动跳过已翻译的 chunk（元数据或模板变更建议全新运行）
 - **Manifest 校验** — SHA-256 hash 追踪，防止过时或损坏的输出被合并
 - **多格式输出** — HTML（含浮动目录）、DOCX、EPUB、PDF
 - **多语言** — zh、en、ja、ko、fr、de、es（可扩展）
@@ -54,23 +54,23 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 
 ### 1. 安装 Skill
 
-**方式 A：ClawHub**
+**方式 A：npx（推荐）**
 
 ```bash
-npx clawhub install rainman-translate-book
+npx skills add deusyu/translate-book -a claude-code -g
 ```
 
 **方式 B：Git 克隆**
 
 ```bash
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/rainman-translate-book
+git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
 ```
 
 **方式 C：符号链接（便于开发）**
 
 ```bash
-git clone https://github.com/deusyu/translate-book.git ~/code/rainman-translate-book
-ln -s ~/code/rainman-translate-book ~/.claude/skills/rainman-translate-book
+git clone https://github.com/deusyu/translate-book.git ~/code/translate-book
+ln -s ~/code/translate-book ~/.claude/skills/translate-book
 ```
 
 ### 2. 翻译一本书
@@ -134,6 +134,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 校验通过后：合并 → Pandoc 生成 HTML → 注入目录 → Calibre 生成 DOCX、EPUB、PDF。
 
+**注意：** `{book_name}_temp/` 是单次翻译运行的工作目录。如果修改了标题、作者、输出语言、模板或图片资源，建议使用新的 temp 目录，或先删除已有的最终产物（`output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`）再重跑。
+
 ## 项目结构
 
 | 文件 | 用途 |
@@ -154,6 +156,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `Manifest validation failed` | 源 chunk 在拆分后被修改 — 重新运行 `convert.py` |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
+| 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
 | PDF 生成失败 | 确认 Calibre 已安装且支持 PDF 输出 |
 
