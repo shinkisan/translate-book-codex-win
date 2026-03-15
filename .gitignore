@@ -1,0 +1,12 @@
+# Translation temp directories
+*_temp/
+
+# OS files
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Calibre intermediates
+*.htmlz
