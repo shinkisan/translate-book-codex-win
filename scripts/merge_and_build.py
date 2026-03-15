@@ -143,8 +143,20 @@ def merge_markdown_files(temp_dir):
             print(f"WARNING: output.md exists but manifest validation failed — deleting stale output.md")
             os.remove(output_md)
         else:
-            print(f"Skipping merge - output.md already exists and manifest is valid")
-            return True
+            # Check if any output_chunk is newer than output.md (re-translated chunks)
+            output_md_mtime = os.path.getmtime(output_md)
+            newer_chunks = []
+            if ordered_files:
+                newer_chunks = [
+                    os.path.basename(f) for f in ordered_files
+                    if os.path.getmtime(f) > output_md_mtime
+                ]
+            if newer_chunks:
+                print(f"Re-merging — {len(newer_chunks)} chunk(s) newer than output.md: {', '.join(newer_chunks[:5])}{'...' if len(newer_chunks) > 5 else ''}")
+                os.remove(output_md)
+            else:
+                print(f"Skipping merge - output.md already exists and is up to date")
+                return True
 
     if not ok:
         print("ERROR: Merge validation failed. Fix the issues above before merging.")
@@ -455,6 +467,16 @@ def convert_md_to_html(temp_dir, title, lang_cfg, author=None):
         print("Error: output.md not found.")
         return False
 
+    book_doc_file = os.path.join(temp_dir, 'book_doc.html')
+
+    # Skip HTML generation if book_doc.html exists and is newer than output.md
+    if os.path.exists(book_doc_file):
+        if os.path.getmtime(book_doc_file) > os.path.getmtime(md_file):
+            print("Skipping HTML generation - book_doc.html is up to date")
+            return True
+        else:
+            print("Re-generating HTML - output.md is newer")
+
     temp_html_file = os.path.join(temp_dir, 'output.html')
 
     # Try pandoc -> python-markdown -> basic regex
@@ -682,9 +704,32 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
     output_file = os.path.join(temp_dir, f"book{output_ext}")
 
     if os.path.exists(output_file):
-        file_size = os.path.getsize(output_file)
-        print(f"Skipping {output_ext} - already exists ({file_size:,} bytes)")
-        return output_file
+        output_mtime = os.path.getmtime(output_file)
+
+        # Check if source HTML is newer
+        html_newer = os.path.getmtime(html_file) > output_mtime
+
+        # Check if any image asset is newer (Calibre embeds these)
+        images_newer = False
+        images_dir = os.path.join(temp_dir, 'images')
+        if os.path.isdir(images_dir):
+            for img in os.listdir(images_dir):
+                img_path = os.path.join(images_dir, img)
+                if os.path.isfile(img_path) and os.path.getmtime(img_path) > output_mtime:
+                    images_newer = True
+                    break
+
+        if not html_newer and not images_newer:
+            file_size = os.path.getsize(output_file)
+            print(f"Skipping {output_ext} - already exists and up to date ({file_size:,} bytes)")
+            return output_file
+        else:
+            reasons = []
+            if html_newer:
+                reasons.append("source HTML changed")
+            if images_newer:
+                reasons.append("image assets changed")
+            print(f"Rebuilding {output_ext} - {', '.join(reasons)}")
 
     publish_script = os.path.join(SCRIPT_DIR, "calibre_html_publish.py")
     if not os.path.exists(publish_script):

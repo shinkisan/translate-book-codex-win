@@ -45,8 +45,10 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 
 - **Claude Code CLI** — installed and authenticated
 - **Calibre** — `ebook-convert` command must be available ([download](https://calibre-ebook.com/))
-- **Pandoc** — for Markdown→HTML conversion ([download](https://pandoc.org/))
-- **Python 3** — with `beautifulsoup4` (optional, for better TOC generation)
+- **Pandoc** — for HTML↔Markdown conversion ([download](https://pandoc.org/))
+- **Python 3** with:
+  - `pypandoc` — required (`pip install pypandoc`)
+  - `beautifulsoup4` — optional, for better TOC generation (`pip install beautifulsoup4`)
 
 ## Quick Start
 
@@ -61,13 +63,13 @@ npx clawhub install rainman-translate-book
 **Option B: Git clone**
 
 ```bash
-git clone https://github.com/{owner}/rainman-translate-book.git ~/.claude/skills/rainman-translate-book
+git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/rainman-translate-book
 ```
 
 **Option C: Symlink (for development)**
 
 ```bash
-git clone https://github.com/{owner}/rainman-translate-book.git ~/code/rainman-translate-book
+git clone https://github.com/deusyu/translate-book.git ~/code/rainman-translate-book
 ln -s ~/code/rainman-translate-book ~/.claude/skills/rainman-translate-book
 ```
 
@@ -82,7 +84,7 @@ translate /path/to/book.pdf to Chinese
 Or use the slash command:
 
 ```
-/rainman-translate-book translate /path/to/book.pdf to Japanese
+/translate-book translate /path/to/book.pdf to Japanese
 ```
 
 The skill handles the full pipeline automatically — convert, chunk, translate in parallel, validate, merge, and build all output formats.

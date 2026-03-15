@@ -45,8 +45,10 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 
 - **Claude Code CLI** — 已安装并完成认证
 - **Calibre** — `ebook-convert` 命令可用（[下载](https://calibre-ebook.com/)）
-- **Pandoc** — 用于 Markdown→HTML 转换（[下载](https://pandoc.org/)）
-- **Python 3** — 可选安装 `beautifulsoup4`（用于更好的目录生成）
+- **Pandoc** — 用于 HTML↔Markdown 转换（[下载](https://pandoc.org/)）
+- **Python 3**，需要：
+  - `pypandoc` — 必需（`pip install pypandoc`）
+  - `beautifulsoup4` — 可选，用于更好的目录生成（`pip install beautifulsoup4`）
 
 ## 快速开始
 
@@ -61,13 +63,13 @@ npx clawhub install rainman-translate-book
 **方式 B：Git 克隆**
 
 ```bash
-git clone https://github.com/{owner}/rainman-translate-book.git ~/.claude/skills/rainman-translate-book
+git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/rainman-translate-book
 ```
 
 **方式 C：符号链接（便于开发）**
 
 ```bash
-git clone https://github.com/{owner}/rainman-translate-book.git ~/code/rainman-translate-book
+git clone https://github.com/deusyu/translate-book.git ~/code/rainman-translate-book
 ln -s ~/code/rainman-translate-book ~/.claude/skills/rainman-translate-book
 ```
 
@@ -82,7 +84,7 @@ translate /path/to/book.pdf to Chinese
 或使用斜杠命令：
 
 ```
-/rainman-translate-book translate /path/to/book.pdf to Japanese
+/translate-book translate /path/to/book.pdf to Japanese
 ```
 
 Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合并、生成所有输出格式。
