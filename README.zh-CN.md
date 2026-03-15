@@ -63,7 +63,7 @@ npx skills add deusyu/translate-book -a claude-code -g
 **方式 B：ClawHub**
 
 ```bash
-clawhub install rainman-translate-book
+clawhub install translate-book
 ```
 
 **方式 C：Git 克隆**

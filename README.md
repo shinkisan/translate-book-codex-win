@@ -63,7 +63,7 @@ npx skills add deusyu/translate-book -a claude-code -g
 **Option B: ClawHub**
 
 ```bash
-clawhub install rainman-translate-book
+clawhub install translate-book
 ```
 
 **Option C: Git clone**
