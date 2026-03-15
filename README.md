@@ -60,13 +60,19 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 npx skills add deusyu/translate-book -a claude-code -g
 ```
 
-**Option B: Git clone**
+**Option B: ClawHub**
+
+```bash
+clawhub install rainman-translate-book
+```
+
+**Option C: Git clone**
 
 ```bash
 git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
 ```
 
-**Option C: Symlink (for development)**
+**Option D: Symlink (for development)**
 
 ```bash
 git clone https://github.com/deusyu/translate-book.git ~/code/translate-book

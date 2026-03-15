@@ -60,13 +60,19 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 npx skills add deusyu/translate-book -a claude-code -g
 ```
 
-**方式 B：Git 克隆**
+**方式 B：ClawHub**
+
+```bash
+clawhub install rainman-translate-book
+```
+
+**方式 C：Git 克隆**
 
 ```bash
 git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
 ```
 
-**方式 C：符号链接（便于开发）**
+**方式 D：符号链接（便于开发）**
 
 ```bash
 git clone https://github.com/deusyu/translate-book.git ~/code/translate-book
