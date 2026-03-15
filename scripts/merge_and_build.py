@@ -179,17 +179,11 @@ def merge_markdown_files(temp_dir):
         print("WARNING: No manifest.json found — using legacy glob-based merge.")
         print("  For hash validation, re-run convert.py to generate manifest.json")
 
-        # Match both chunk* and page* output files
-        output_files = (
-            glob.glob(os.path.join(temp_dir, 'output_chunk*.md')) +
-            glob.glob(os.path.join(temp_dir, 'output_page*.md'))
-        )
+        # Match chunk output files
+        output_files = glob.glob(os.path.join(temp_dir, 'output_chunk*.md'))
 
-        # Count original source files (both chunk* and page*)
-        original_files = (
-            glob.glob(os.path.join(temp_dir, 'chunk*.md')) +
-            glob.glob(os.path.join(temp_dir, 'page*.md'))
-        )
+        # Count original source files
+        original_files = glob.glob(os.path.join(temp_dir, 'chunk*.md'))
         original_files = [f for f in original_files if not os.path.basename(f).startswith('output_')]
 
         if not output_files:

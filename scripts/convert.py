@@ -497,21 +497,15 @@ def split_markdown_structured(md_file, temp_dir, target_size=6000):
 
 
 def _find_existing_chunk_files(temp_dir):
-    """Find existing chunk or page source files (excluding output_ prefixed).
+    """Find existing chunk source files (excluding output_ prefixed).
 
-    Returns (filenames_list, is_legacy) where is_legacy=True if page* files found.
+    Returns (filenames_list, is_legacy=False).
     """
     chunk_files = glob.glob(os.path.join(temp_dir, 'chunk*.md'))
     chunk_files = [os.path.basename(f) for f in chunk_files if not os.path.basename(f).startswith('output_')]
 
-    page_files = glob.glob(os.path.join(temp_dir, 'page*.md'))
-    page_files = [os.path.basename(f) for f in page_files if not os.path.basename(f).startswith('output_')]
-
     if chunk_files:
         return sorted(chunk_files), False
-    if page_files:
-        print("NOTE: Found legacy page*.md files, using them for backward compatibility")
-        return sorted(page_files), True
     return [], False
 
 

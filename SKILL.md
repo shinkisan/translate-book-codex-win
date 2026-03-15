@@ -1,15 +1,8 @@
 ---
 name: translate-book
 description: Translate books (PDF/DOCX/EPUB) into any language using parallel sub-agents. Converts input -> Markdown chunks -> translated chunks -> HTML/DOCX/EPUB/PDF.
-allowed-tools:
-  - Read
-  - Write
-  - Edit
-  - Bash
-  - Glob
-  - Grep
-  - Agent
-  - AskUserQuestion
+allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, AskUserQuestion
+metadata: {"openclaw":{"requires":{"bins":["python3","pandoc","ebook-convert"],"anyBins":["calibre","ebook-convert"]}}}
 ---
 
 # Book Translation Skill
@@ -23,17 +16,17 @@ You are a book translation assistant. You translate entire books from one langua
 Determine the following from the user's message:
 - **file_path**: Path to the input file (PDF, DOCX, or EPUB) — REQUIRED
 - **target_lang**: Target language code (default: `zh`) — e.g. zh, en, ja, ko, fr, de, es
-- **concurrency**: Number of parallel agents per batch (default: `8`)
+- **concurrency**: Number of parallel sub-agents per batch (default: `8`)
 - **custom_instructions**: Any additional translation instructions from the user (optional)
 
-If the file path is not provided, ask the user with AskUserQuestion.
+If the file path is not provided, ask the user.
 
 ### 2. Preprocess — Convert to Markdown Chunks
 
 Run the conversion script to produce chunks:
 
 ```bash
-python3 ~/.claude/skills/rainman-translate-book/scripts/convert.py "<file_path>" --olang "<target_lang>"
+python3 {baseDir}/scripts/convert.py "<file_path>" --olang "<target_lang>"
 ```
 
 This creates a `{filename}_temp/` directory containing:
@@ -48,12 +41,8 @@ Use Glob to find all source chunks and determine which still need translation:
 
 ```
 Glob: {filename}_temp/chunk*.md
-Glob: {filename}_temp/page*.md
 Glob: {filename}_temp/output_chunk*.md
-Glob: {filename}_temp/output_page*.md
 ```
-
-Take the union of chunk* and page* files (backward compatibility with legacy page* naming).
 
 Calculate the set of chunks that have a source file but no corresponding `output_` file. These are the chunks to translate.
 
@@ -61,29 +50,35 @@ If all chunks already have translations, skip to step 5.
 
 ### 4. Parallel Translation with Sub-Agents
 
-**Each chunk gets its own independent agent** (1 chunk = 1 agent = 1 fresh context). This prevents context accumulation and output truncation.
+**Each chunk gets its own independent sub-agent** (1 chunk = 1 sub-agent = 1 fresh context). This prevents context accumulation and output truncation.
 
 Launch chunks in batches to respect API rate limits:
-- Each batch: up to `concurrency` agents in parallel (default: 8)
+- Each batch: up to `concurrency` sub-agents in parallel (default: 8)
 - Wait for the current batch to complete before launching the next
 
-Each agent receives:
+**Spawn each sub-agent with the following task.** Use whatever sub-agent/background-agent mechanism your runtime provides (e.g. the Agent tool, sessions_spawn, or equivalent).
+
+The output file is `output_` prefixed to the source filename: `chunk0001.md` → `output_chunk0001.md`.
+
+> Translate the file `<temp_dir>/chunk<NNNN>.md` to {TARGET_LANGUAGE} and write the result to `<temp_dir>/output_chunk<NNNN>.md`. Follow the translation rules below. Output only the translated content — no commentary.
+
+Each sub-agent receives:
 - The single chunk file it is responsible for
 - The temp directory path
 - The target language
 - The translation prompt (see below)
 - Any custom instructions
 
-**Each agent's task**:
+**Each sub-agent's task**:
 1. Read the source chunk file (e.g. `chunk0001.md`)
 2. Translate the content following the translation rules below
-3. Write the translated content to `output_chunk0001.md` (or `output_page0001.md` for legacy files)
+3. Write the translated content to `output_chunk0001.md`
 
-**IMPORTANT**: Each agent translates exactly ONE chunk and writes the result directly to the output file. No START/END markers needed.
+**IMPORTANT**: Each sub-agent translates exactly ONE chunk and writes the result directly to the output file. No START/END markers needed.
 
 #### Translation Prompt for Sub-Agents
 
-Include this translation prompt in each agent's instructions (replace `{TARGET_LANGUAGE}` with the actual language name, e.g. "Chinese"):
+Include this translation prompt in each sub-agent's instructions (replace `{TARGET_LANGUAGE}` with the actual language name, e.g. "Chinese"):
 
 ---
 
@@ -133,7 +128,7 @@ markdown文件正文:
 
 After all batches complete, use Glob to check that every source chunk has a corresponding output file.
 
-If any are missing, retry them — each missing chunk as its own agent. Maximum 2 attempts per chunk (initial + 1 retry).
+If any are missing, retry them — each missing chunk as its own sub-agent. Maximum 2 attempts per chunk (initial + 1 retry).
 
 Also read `manifest.json` and verify:
 - Every chunk id has a corresponding output file
@@ -145,14 +140,14 @@ Report any chunks that failed after retry.
 
 Read `config.txt` from the temp directory to get the `original_title` field.
 
-Translate the title to the target language directly (you are Claude — just translate it). For Chinese, wrap in 书名号: `《translated_title》`.
+Translate the title to the target language. For Chinese, wrap in 书名号: `《translated_title》`.
 
 ### 7. Post-process — Merge and Build
 
 Run the build script with the translated title:
 
 ```bash
-python3 ~/.claude/skills/rainman-translate-book/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>"
+python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>"
 ```
 
 The script reads `output_lang` from `config.txt` automatically. Optional overrides: `--lang`, `--author`.
