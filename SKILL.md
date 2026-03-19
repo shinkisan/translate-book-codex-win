@@ -147,8 +147,10 @@ Translate the title to the target language. For Chinese, wrap in 书名号: `《
 Run the build script with the translated title:
 
 ```bash
-python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>"
+python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>" --cleanup
 ```
+
+The `--cleanup` flag removes intermediate files (chunks, input.html, etc.) after a fully successful build. If the user asked to keep intermediates, omit `--cleanup`.
 
 The script reads `output_lang` from `config.txt` automatically. Optional overrides: `--lang`, `--author`.
 

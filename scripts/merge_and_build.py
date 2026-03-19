@@ -778,11 +778,15 @@ def generate_formats(temp_dir, lang_attr):
 
     # Print summary table
     print("\nFormat results:")
+    has_failures = False
     for ext, (status, detail) in results.items():
         if status == 'OK':
             print(f"  {ext}: {status} ({detail})")
         else:
             print(f"  {ext}: {status}")
+            has_failures = True
+
+    return not has_failures
 
 
 # =============================================================================
@@ -795,6 +799,7 @@ def main():
     parser.add_argument('--title', default=None, help='Translated book title (override config)')
     parser.add_argument('--author', default=None, help='Author name (override config)')
     parser.add_argument('--lang', default=None, help='Output language code (override config)')
+    parser.add_argument('--cleanup', action='store_true', help='Remove intermediate artifacts after successful build')
 
     args = parser.parse_args()
     temp_dir = args.temp_dir
@@ -830,7 +835,7 @@ def main():
     add_toc(temp_dir)
 
     # Step 7: Generate formats
-    generate_formats(temp_dir, lang_cfg['lang_attr'])
+    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'])
 
     print("\n=== Build Complete ===")
     print(f"All outputs saved to: {temp_dir}")
@@ -841,6 +846,45 @@ def main():
         if os.path.exists(filepath):
             size = os.path.getsize(filepath)
             print(f"  {ext}: {size:,} bytes")
+
+    # Cleanup intermediate artifacts if requested (skip if any format failed)
+    if args.cleanup:
+        if all_formats_ok:
+            cleanup_intermediate_files(temp_dir)
+        else:
+            print("\nSkipping cleanup — some formats failed. Intermediate files kept for diagnosis/retry.")
+
+
+def cleanup_intermediate_files(temp_dir):
+    """Remove intermediate artifacts, keeping only final outputs."""
+    print("\n=== Cleaning up intermediate files ===")
+
+    removed = []
+
+    # Remove chunk*.md and output_chunk*.md
+    for pattern in ['chunk*.md', 'output_chunk*.md']:
+        for filepath in glob.glob(os.path.join(temp_dir, pattern)):
+            os.remove(filepath)
+            removed.append(os.path.basename(filepath))
+
+    # Remove specific intermediate files
+    for name in ['input.html', 'input.md', 'output.html']:
+        filepath = os.path.join(temp_dir, name)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            removed.append(name)
+
+    if removed:
+        print(f"Removed {len(removed)} intermediate file(s):")
+        # Summarize chunk files instead of listing each one
+        chunk_files = [f for f in removed if 'chunk' in f]
+        other_files = [f for f in removed if 'chunk' not in f]
+        if chunk_files:
+            print(f"  {len(chunk_files)} chunk files (chunk*.md, output_chunk*.md)")
+        for f in other_files:
+            print(f"  {f}")
+    else:
+        print("No intermediate files to remove.")
 
 
 if __name__ == "__main__":
