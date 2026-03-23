@@ -162,6 +162,8 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 
 ## Star History
 
+If you find this project helpful, please consider giving it a Star ⭐!
+
 [![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
 
 ## License
