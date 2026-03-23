@@ -160,6 +160,10 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
 | PDF 生成失败 | 确认 Calibre 已安装且支持 PDF 输出 |
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
+
 ## License
 
 [MIT](LICENSE)

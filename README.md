@@ -160,6 +160,10 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | `output.md exists but manifest invalid` | Stale output — the script auto-deletes and re-merges |
 | PDF generation fails | Ensure Calibre is installed with PDF output support |
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
+
 ## License
 
 [MIT](LICENSE)
