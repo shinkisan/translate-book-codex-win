@@ -95,7 +95,6 @@ class ConvertHtmlWithCalibreTests(unittest.TestCase):
             self.assertIn("--cover", cmd)
             self.assertIn(str(cover_file), cmd)
 
-
 class ExtractCoverFromEpubTests(unittest.TestCase):
     @unittest.skipUnless(
         hasattr(merge_and_build, "extract_cover_from_epub"),
@@ -109,6 +108,25 @@ class ExtractCoverFromEpubTests(unittest.TestCase):
 
             with zipfile.ZipFile(epub_file, "w") as zf:
                 zf.writestr(
+                    "META-INF/container.xml",
+                    """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+                )
+                zf.writestr(
+                    "decoy/unused.opf",
+                    """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata />
+  <manifest />
+</package>
+""",
+                )
+                zf.writestr(
                     "OEBPS/content.opf",
                     """<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
@@ -120,6 +138,59 @@ class ExtractCoverFromEpubTests(unittest.TestCase):
 """,
                 )
                 zf.writestr("OEBPS/images/cover.jpg", cover_bytes)
+
+            extracted = merge_and_build.extract_cover_from_epub(
+                str(epub_file), str(output_dir)
+            )
+
+            self.assertIsNotNone(extracted)
+            self.assertTrue(Path(extracted).exists())
+            self.assertEqual(Path(extracted).read_bytes(), cover_bytes)
+
+    @unittest.skipUnless(
+        hasattr(merge_and_build, "extract_cover_from_epub"),
+        "cover extraction support not merged yet",
+    )
+    def test_extracts_cover_via_meta_cover_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            epub_file = Path(temp_dir) / "source.epub"
+            output_dir = Path(temp_dir) / "extract"
+            cover_bytes = b"fallback-image"
+
+            with zipfile.ZipFile(epub_file, "w") as zf:
+                zf.writestr(
+                    "META-INF/container.xml",
+                    """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+                )
+                zf.writestr(
+                    "decoy/unused.opf",
+                    """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata />
+  <manifest />
+</package>
+""",
+                )
+                zf.writestr(
+                    "OPS/package.opf",
+                    """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata>
+    <meta name="cover" content="cover-item" />
+  </metadata>
+  <manifest>
+    <item id="cover-item" href="images/fallback.jpg" media-type="image/jpeg" />
+  </manifest>
+</package>
+""",
+                )
+                zf.writestr("OPS/images/fallback.jpg", cover_bytes)
 
             extracted = merge_and_build.extract_cover_from_epub(
                 str(epub_file), str(output_dir)

@@ -87,7 +87,7 @@ class GenerateFormatTests(unittest.TestCase):
 
             self._set_mtime(html_file, 100)
             self._set_mtime(output_file, 200)
-            self._set_mtime(cover_file, 50)
+            self._set_mtime(cover_file, 300)
 
             with mock.patch.object(
                 merge_and_build.subprocess,
@@ -103,6 +103,63 @@ class GenerateFormatTests(unittest.TestCase):
             cmd = run_mock.call_args.args[0]
             self.assertIn("--cover", cmd)
             self.assertIn(cover_file, cmd)
+
+
+class CleanupIntermediateFilesTests(unittest.TestCase):
+    def _touch(self, path, content="x"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    @unittest.skipUnless(
+        hasattr(merge_and_build, "extract_cover_from_epub"),
+        "cover extraction support not merged yet",
+    )
+    def test_cleanup_removes_cover_extract_directory_when_present(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cover_extract = temp_path / "cover_extract"
+            self._touch(cover_extract / "OPS" / "images" / "cover.jpg", "image")
+            self._touch(temp_path / "chunk0001.md", "chunk")
+            self._touch(temp_path / "output_chunk0001.md", "translated")
+            self._touch(temp_path / "input.html", "<html></html>")
+
+            merge_and_build.cleanup_intermediate_files(temp_dir)
+
+            self.assertFalse((temp_path / "chunk0001.md").exists())
+            self.assertFalse((temp_path / "output_chunk0001.md").exists())
+            self.assertFalse((temp_path / "input.html").exists())
+            self.assertFalse(cover_extract.exists())
+
+
+class MissingCoverPathTests(unittest.TestCase):
+    @unittest.skipUnless(
+        "cover" in inspect.signature(merge_and_build.generate_format).parameters,
+        "cover support not merged yet",
+    )
+    def test_main_rejects_missing_cover_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_cover = os.path.join(temp_dir, "missing-cover.jpg")
+
+            with mock.patch.object(
+                merge_and_build, "load_config", return_value={}
+            ), mock.patch.object(
+                merge_and_build, "get_lang_config", return_value={"lang_attr": "zh-CN"}
+            ), mock.patch.object(
+                merge_and_build, "merge_markdown_files", return_value=True
+            ), mock.patch.object(
+                merge_and_build, "convert_md_to_html", return_value=True
+            ), mock.patch.object(
+                merge_and_build, "add_toc", return_value=True
+            ), mock.patch.object(
+                merge_and_build, "generate_formats"
+            ) as generate_formats_mock, mock.patch.object(
+                sys, "argv", ["merge_and_build.py", "--temp-dir", temp_dir, "--cover", missing_cover]
+            ):
+                with self.assertRaises(SystemExit) as exc:
+                    merge_and_build.main()
+
+            self.assertNotEqual(exc.exception.code, 0)
+            generate_formats_mock.assert_not_called()
 
 
 if __name__ == "__main__":
