@@ -166,6 +166,12 @@ If you find this project helpful, please consider giving it a Star ⭐!
 
 [![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
 
+## Sponsor
+
+If this project saves you time, consider sponsoring to keep it maintained and improved.
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github)](https://github.com/sponsors/deusyu)
+
 ## License
 
 [MIT](LICENSE)

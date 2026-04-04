@@ -166,6 +166,12 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 [![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
 
+## 赞助
+
+如果这个项目帮你节省了时间，欢迎赞助支持后续维护和改进。
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github)](https://github.com/sponsors/deusyu)
+
 ## License
 
 [MIT](LICENSE)
