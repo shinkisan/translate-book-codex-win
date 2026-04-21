@@ -186,6 +186,35 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | `output.md exists but manifest invalid` | Stale output — the script auto-deletes and re-merges |
 | PDF generation fails | Ensure Calibre is installed with PDF output support |
 
+## Roadmap
+
+Tracking [issue #7](https://github.com/deusyu/translate-book/issues/7) — name/term inconsistency and pronoun/gender errors across chunks. Today's glossary covers high-frequency main entities; secondary characters, spelling variants, and pronoun resolution are not yet addressed. The plan is four independently shippable phases.
+
+### Design principles
+
+- **Scripts do bookkeeping; LLMs do semantic merge.** State, schemas, dedup, hashing, IO are deterministic Python. Naming, gender attribution, alias judgment, conflict resolution are LLM calls.
+- **Single writer for shared state.** Only the main agent writes `glossary.json` and `run_state.json`; sub-agents write per-chunk meta files. No locking needed.
+- **Conservative merge.** New entities require evidence; alias merges need LLM judgment, not just string similarity; gender starts at `unknown` and only moves up under explicit evidence; canonical values aren't silently overwritten on conflict.
+- **Three-layer state, three separate files.** `glossary.json` (canonical, sub-agents read), `output_chunkNNNN.meta.json` (raw per-chunk observations), `run_state.json` (orchestration).
+
+### Phase 1 — Sub-agent feedback + glossary merge (not started)
+
+The largest leverage point. Today sub-agents read the glossary but can't write back what they discover. This phase closes the loop: `glossary.json` schema → v2 (`id`, `aliases`, `gender`, `confidence`, `evidence_refs`, `notes`); new `output_chunkNNNN.meta.json` for sub-agent observations; new `scripts/merge_meta.py` for batch-boundary merging; SKILL.md Step 4 extended so sub-agents emit a meta file alongside the translation and the main agent merges after each batch.
+
+### Phase 2 — Neighbor context for pronouns (not started, independent of Phase 1)
+
+Inject `prev_excerpt` (last ~300 chars of previous chunk) and `next_excerpt` (first ~300 chars of next chunk) into each sub-agent prompt as read-only context. No new state files. Pure prompt-assembly change.
+
+### Phase 3 — Selective re-translation (not started, depends on Phase 1)
+
+Phase 1's batch feedback only improves *forward*. Selective rerun closes the *backward* loop: new `scripts/run_state.py` + `run_state.json` schema; per-chunk tracking of `glossary_version_used`, `entity_ids_used`, `output_hash`; five decision rules for deciding which chunks need re-translation this run.
+
+### Phase 4 — Bootstrap warm-up (experimental, gated on Phase 1 data)
+
+Phase 1 grows the glossary batch-by-batch, so the first batch sees the smallest glossary and has the highest drift risk. Possible approaches: sequential bootstrap, variable concurrency, or skip entirely. Decision belongs to whoever has run the system on real books.
+
+> The specific schemas and file layouts in each phase are illustrative — they may shift as Phase 1 hits real data. Phase 4 is gated on data; Phase 3 may be re-scoped or dropped if Phase 1 alone proves "good enough".
+
 ## Star History
 
 If you find this project helpful, please consider giving it a Star ⭐!

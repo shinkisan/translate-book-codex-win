@@ -186,6 +186,35 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
 | PDF 生成失败 | 确认 Calibre 已安装且支持 PDF 输出 |
 
+## 后续规划
+
+跟踪 [issue #7](https://github.com/deusyu/translate-book/issues/7) — chunk 之间的人名/术语不一致以及代词/性别错误。当前的术语表功能已覆盖高频主实体（主角、主要地名、反复出现的领域术语），但低频角色、拼写变体、代词指代尚未覆盖。整体方案分为四个可独立交付的阶段。
+
+### 设计原则
+
+- **脚本做记账，LLM 做语义合并**。状态管理、schema 校验、去重、hash、IO 是确定性的 Python；命名、性别归属、别名判定、冲突解决交给 LLM。
+- **共享状态单写者**。`glossary.json` 和 `run_state.json` 仅由主 agent 写入；子 agent 只读共享状态，并写入各自的 chunk meta 文件。无需加锁。
+- **保守合并**。新实体必须有证据；别名合并需要 LLM 判断,不能仅靠字符串相似度；性别默认 `unknown`,仅在显式证据下才升级；canonical 值在冲突时不会被静默覆盖。
+- **三层状态,三个独立文件**。`glossary.json`（canonical,子 agent 读取）、`output_chunkNNNN.meta.json`（子 agent 原始观察）、`run_state.json`（编排状态）。
+
+### Phase 1 — 子 agent 反馈 + 术语表合并（未开始）
+
+杠杆最大的一步。当前子 agent 只能读术语表,无法把翻译过程中发现的新信息写回。本阶段闭环:`glossary.json` schema → v2（新增 `id`、`aliases`、`gender`、`confidence`、`evidence_refs`、`notes`）；新增 `output_chunkNNNN.meta.json` 记录子 agent 的观察（新实体、别名假设、属性假设、使用的 entity id、冲突）；新增 `scripts/merge_meta.py` 处理批次边界的合并；SKILL.md Step 4 扩展,子 agent 在输出译文的同时生成 meta 文件,主 agent 在每批结束后合并。
+
+### Phase 2 — 代词的邻居上下文（未开始,独立于 Phase 1）
+
+为每个子 agent prompt 注入 `prev_excerpt`（上一个 chunk 末尾约 300 字）和 `next_excerpt`（下一个 chunk 开头约 300 字）,仅作只读上下文参考。不新增状态文件,纯 prompt 装配变更。
+
+### Phase 3 — 精确重译（未开始,依赖 Phase 1）
+
+Phase 1 的批次反馈只能向前优化。精确重译闭合向后的回路:新增 `scripts/run_state.py` 和 `run_state.json` schema；按 chunk 跟踪 `glossary_version_used`、`entity_ids_used`、`output_hash`；五条决策规则判断本次哪些 chunk 需要重译。
+
+### Phase 4 — 冷启动预热（实验性,依赖 Phase 1 的实际数据）
+
+Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drift 风险最高。可能的方案:顺序冷启动、可变并发、或跳过预热。决策权属于实际跑过完整书的人。
+
+> 各阶段的具体 schema 和文件布局是示意性的,会在 Phase 1 接触真实数据后调整。Phase 4 取决于实际数据；如果 Phase 1 已经"够好",Phase 3 可能重新调整范围或被放弃。
+
 ## Star History
 
 如果这个项目对您有帮助，请考虑为其点亮一颗 Star ⭐！
