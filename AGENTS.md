@@ -1,12 +1,12 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## Project
 
-translate-book is a Claude Code Skill that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. Published on ClawHub as `translate-book` and on GitHub as `deusyu/translate-book`.
+translate-book is a Codex Skill that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. Published on ClawHub as `translate-book` and on GitHub as `deusyu/translate-book`.
 
 ## Structure
 
-- `SKILL.md` — Skill definition, the orchestration logic that Claude Code / OpenClaw follows
+- `SKILL.md` — Skill definition, the orchestration logic that Codex / OpenClaw follows
 - `scripts/convert.py` — PDF/DOCX/EPUB → Markdown chunks (via Calibre HTMLZ)
 - `scripts/manifest.py` — SHA-256 chunk tracking and merge validation
 - `scripts/glossary.py` — Term-consistency glossary; per-chunk term tables injected into sub-agent prompts
@@ -31,13 +31,13 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - Only `chunk*.md` naming — no `page*` legacy support
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
-- Subagent instructions in SKILL.md must be platform-neutral (work on Claude Code, OpenClaw, Codex)
+- Subagent instructions in SKILL.md must be platform-neutral (work on Codex, OpenClaw, Codex)
 - README changes must be synced to both README.md and README.zh-CN.md
 - Publish to both GitHub (`git push`) and ClawHub (`clawhub publish ./ --version <semver>`) on release
 
 ## Do not
 
 - Do not reintroduce `page*` file support — it was intentionally removed
-- Do not hardcode `~/.claude/skills/` paths in SKILL.md — use `{baseDir}`
+- Do not hardcode `~/.Codex/skills/` paths in SKILL.md — use `{baseDir}`
 - Do not put platform-specific tool names (Agent, sessions_spawn) in `allowed-tools` as the only option — keep the whitelist cross-platform
 - Do not add mtime-based incremental rebuild for HTML/format generation — the current skip logic is intentionally simple (existence check). Metadata/template changes require manual cleanup. This is documented in the README.

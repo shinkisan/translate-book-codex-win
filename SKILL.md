@@ -48,6 +48,38 @@ Calculate the set of chunks that have a source file but no corresponding `output
 
 If all chunks already have translations, skip to step 5.
 
+### 3.5. Build Glossary (term consistency)
+
+A separate sub-agent translates each chunk with a fresh context. Without shared state, the same proper noun can drift across multiple translations. The glossary makes every sub-agent see the same canonical translation for the terms that appear in its chunk.
+
+If `<temp_dir>/glossary.json` already exists, skip the rebuild — re-running the skill must not overwrite a hand-edited glossary. To force a rebuild, delete the file.
+
+Otherwise:
+
+1. **Sample chunks**: read `chunk0001.md`, the last chunk, and 3 evenly-spaced middle chunks. If `chunk_count < 5`, sample all of them.
+2. **Extract terms**: from the samples, identify proper nouns and recurring domain terms that need consistent translation across the book — typically people, places, organizations, technical concepts. Translate each into the target language. Skip generic vocabulary that any translator would render the same way.
+3. **Write `glossary.json`** in the temp dir, matching this schema:
+
+   ```json
+   {
+     "version": 1,
+     "terms": [
+       {"source": "Manhattan", "target": "曼哈顿", "category": "place", "frequency": 0}
+     ],
+     "high_frequency_top_n": 20
+   }
+   ```
+
+4. **Count frequencies** by running:
+
+   ```bash
+   python3 {baseDir}/scripts/glossary.py count-frequencies "<temp_dir>"
+   ```
+
+   This scans every `chunk*.md` (excluding `output_chunk*.md`), updates each term's `frequency` field, and writes back atomically.
+
+The glossary is hand-editable. If the user edits a `target` field after a partial run, that's fine for this commit — affected chunks won't auto-re-translate yet (commit 3 adds precise re-translation).
+
 ### 4. Parallel Translation with Sub-Agents
 
 **Each chunk gets its own independent sub-agent** (1 chunk = 1 sub-agent = 1 fresh context). This prevents context accumulation and output truncation.
@@ -67,7 +99,16 @@ Each sub-agent receives:
 - The temp directory path
 - The target language
 - The translation prompt (see below)
+- A per-chunk term table (see "Term table assembly" below)
 - Any custom instructions
+
+**Term table assembly** — before spawning a sub-agent, run:
+
+```bash
+python3 {baseDir}/scripts/glossary.py print-terms-for-chunk "<temp_dir>" "chunk<NNNN>.md"
+```
+
+Capture stdout. The CLI emits a 2-column markdown table of every term that either appears in this chunk OR is in the top-N most-frequent terms book-wide. Inject the table as `{TERM_TABLE}` in rule #13 of the translation prompt. **If stdout is empty (no glossary, or no relevant terms), omit rule #13 from this chunk's prompt entirely** — do not leave a dangling `{TERM_TABLE}` placeholder.
 
 **Each sub-agent's task**:
 1. Read the source chunk file (e.g. `chunk0001.md`)
@@ -118,6 +159,9 @@ IMPORTANT REQUIREMENTS:
     - 正文段落不要添加标题标记
     - 如果原文已有markdown标题标记，保持其层级结构
 12. {CUSTOM_INSTRUCTIONS if provided}
+13. 术语一致性：以下术语必须严格使用指定译法，不要自行变换。表格中"原文"列出现在正文中时，必须翻译为"译文"列对应的形式。
+
+{TERM_TABLE}
 
 markdown文件正文:
 

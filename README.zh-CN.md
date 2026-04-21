@@ -111,6 +111,30 @@ python3 scripts/convert.py /path/to/book.pdf --olang zh
 
 Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验。
 
+### 第一步半：术语表（保证全书译名一致）
+
+每个 chunk 由独立的 fresh-context subagent 翻译 — 这意味着同一个专有名词在 100 个 chunk 之间可能出现多种译法。为此，skill 在翻译前会先构建术语表：
+
+1. 抽样 5 个 chunk（首章、末章、3 个均匀分布的中间章节）。
+2. 提取专有名词和反复出现的领域术语，给每个术语确定一个标准译法。
+3. 写入 `<temp_dir>/glossary.json`（schema 见下，可手动编辑）。
+4. 运行 `python3 scripts/glossary.py count-frequencies <temp_dir>`，统计每个术语在全书的出现次数（ASCII 术语用单词边界正则，避免 `cat` 误匹配 `category`；中日韩术语用子串匹配；单字汉字术语会被拒绝以防过度匹配）。
+5. 翻译每个 chunk 之前，主 agent 调用 `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md`，将输出的 2 列 markdown 表格作为硬性约束注入到该 chunk 的 prompt。术语选取 = (本 chunk 中出现的术语) ∪ (全书出现频率 top-N 的术语)。
+
+```json
+{
+  "version": 1,
+  "terms": [
+    {"source": "Manhattan", "target": "曼哈顿", "category": "place", "frequency": 12}
+  ],
+  "high_frequency_top_n": 20
+}
+```
+
+可在两次运行之间编辑 `glossary.json` 修正译法。已存在的 `glossary.json` 不会被覆盖 — 删除它才会重建。
+
+> **关于增量重跑**：当前版本中，翻译完部分 chunk 之后再编辑 `glossary.json`，已翻译的 chunk **不会** 自动失效 — 它们仍保留旧译法。基于术语表变更的精确重跑会在下一个 commit 加入。在那之前，需要手动删除受影响的 `output_chunk*.md`（或整个 temp 目录）才能应用新的译法。
+
 ### 第二步：翻译（并行 subagent）
 
 Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
@@ -143,6 +167,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `SKILL.md` | Claude Code Skill 定义 — 编排完整流程 |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ） |
 | `scripts/manifest.py` | Chunk manifest：SHA-256 追踪与合并校验 |
+| `scripts/glossary.py` | 术语表管理：为每个 chunk 生成专属术语对照表，保证全书译名一致 |
 | `scripts/merge_and_build.py` | 合并 chunks → HTML → DOCX/EPUB/PDF |
 | `scripts/calibre_html_publish.py` | Calibre 格式转换封装 |
 | `scripts/template.html` | 网页 HTML 模板，含浮动目录 |

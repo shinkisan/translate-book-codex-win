@@ -111,6 +111,30 @@ python3 scripts/convert.py /path/to/book.pdf --olang zh
 
 Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation.
 
+### Step 1.5: Glossary (term consistency across chunks)
+
+Each chunk is translated by a fresh-context sub-agent, which means the same proper noun can drift across multiple translations on a 100-chunk book. To fix this, the skill builds a glossary before translation:
+
+1. Sample 5 chunks (first, last, 3 evenly-spaced middle).
+2. Extract proper nouns and recurring domain terms; pick canonical translations.
+3. Write `<temp_dir>/glossary.json` (hand-editable schema below).
+4. Run `python3 scripts/glossary.py count-frequencies <temp_dir>` to populate per-term frequencies (ASCII terms use word-boundary regex so `cat` doesn't match `category`; CJK terms use substring; single-CJK-char terms are rejected).
+5. For each chunk, the orchestrator calls `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md` and injects the resulting 2-column markdown table into that chunk's prompt as a hard constraint. Term selection = (terms appearing in this chunk) ∪ (top-N most-frequent book-wide).
+
+```json
+{
+  "version": 1,
+  "terms": [
+    {"source": "Manhattan", "target": "曼哈顿", "category": "place", "frequency": 12}
+  ],
+  "high_frequency_top_n": 20
+}
+```
+
+Edit `glossary.json` between runs to fix translations; existing `glossary.json` is never overwritten — delete it to rebuild from scratch.
+
+> **Note on partial reruns**: in the current release, editing `glossary.json` after some chunks have been translated does NOT auto-invalidate those chunks — they keep their old translations. Precise glossary-driven re-translation is planned for the next commit. For now, delete the affected `output_chunk*.md` files (or the whole temp dir) to apply glossary edits.
+
 ### Step 2: Translate (parallel subagents)
 
 The skill launches subagents in batches (default: 8 concurrent). Each subagent:
@@ -143,6 +167,7 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | `SKILL.md` | Claude Code skill definition — orchestrates the full pipeline |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks via Calibre HTMLZ |
 | `scripts/manifest.py` | Chunk manifest: SHA-256 tracking and merge validation |
+| `scripts/glossary.py` | Glossary management: per-chunk term tables for consistent terminology |
 | `scripts/merge_and_build.py` | Merge chunks → HTML → DOCX/EPUB/PDF |
 | `scripts/calibre_html_publish.py` | Calibre wrapper for format conversion |
 | `scripts/template.html` | Web HTML template with floating TOC |
