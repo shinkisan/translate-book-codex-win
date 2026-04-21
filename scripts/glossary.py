@@ -112,6 +112,31 @@ def load_glossary(path):
                 raise ValueError(
                     f"Glossary term #{i} in {path} missing required field '{required}'"
                 )
+            if not isinstance(t[required], str):
+                raise ValueError(
+                    f"Glossary term #{i} in {path}: field '{required}' must be a string, "
+                    f"got {type(t[required]).__name__}"
+                )
+        if 'category' in t and not isinstance(t['category'], str):
+            raise ValueError(
+                f"Glossary term #{i} in {path}: field 'category' must be a string, "
+                f"got {type(t['category']).__name__}"
+            )
+        if 'frequency' in t:
+            # bool is a subclass of int — reject it explicitly to catch typos.
+            if isinstance(t['frequency'], bool) or not isinstance(t['frequency'], int):
+                raise ValueError(
+                    f"Glossary term #{i} in {path}: field 'frequency' must be an integer, "
+                    f"got {type(t['frequency']).__name__}"
+                )
+
+    if 'high_frequency_top_n' in data:
+        top_n_val = data['high_frequency_top_n']
+        if isinstance(top_n_val, bool) or not isinstance(top_n_val, int):
+            raise ValueError(
+                f"Glossary at {path}: 'high_frequency_top_n' must be an integer, "
+                f"got {type(top_n_val).__name__}"
+            )
 
     return data
 
@@ -141,12 +166,21 @@ def _count_in_text(source, text):
     if not source:
         return 0
     if _contains_cjk(source):
+        if len(source) <= 1:
+            return 0
         return text.count(source)
     if source.isascii():
         escaped = re.escape(source)
         pattern = rf'(?<!\w){escaped}(?!\w)'
         return len(re.findall(pattern, text))
     return text.count(source)
+
+
+def _appears_in_text(source, text):
+    """Boundary-aware presence check, shared by frequency counting and
+    per-chunk selection so 'cat' never matches 'category' in either path.
+    Single-CJK-char sources always return False (would over-match)."""
+    return _count_in_text(source, text) > 0
 
 
 def count_frequencies(glossary_path, chunks_dir):
@@ -193,7 +227,13 @@ def select_terms_for_chunk(glossary, chunk_text, top_n=None, max_terms=DEFAULT_M
     """Return terms relevant to a single chunk: union of (terms appearing in
     chunk_text) and (top-N most-frequent terms across the whole book).
 
-    Sorted by frequency desc, source asc as tie-breaker. Capped at max_terms.
+    Local hits (terms that actually appear in this chunk) are the primary
+    value of the table — if the union exceeds max_terms, local hits are
+    kept and global top-N is what gets truncated. Within each group, sort
+    by frequency desc with source asc as tie-breaker.
+
+    Boundary-aware: ASCII sources don't match inside larger words, and
+    single-CJK-char sources are excluded (they'd over-match as substrings).
     """
     if top_n is None:
         top_n = glossary.get('high_frequency_top_n', DEFAULT_TOP_N)
@@ -202,21 +242,28 @@ def select_terms_for_chunk(glossary, chunk_text, top_n=None, max_terms=DEFAULT_M
     if not terms:
         return []
 
-    local_indices = set()
-    for i, t in enumerate(terms):
-        source = t.get('source', '')
-        if source and source in chunk_text:
-            local_indices.add(i)
+    sort_key = lambda t: (-t.get('frequency', 0), t.get('source', ''))
 
-    by_freq = sorted(
-        range(len(terms)),
-        key=lambda i: (-terms[i].get('frequency', 0), terms[i].get('source', '')),
+    local_terms = [
+        t for t in terms
+        if t.get('source') and _appears_in_text(t['source'], chunk_text)
+    ]
+    local_terms.sort(key=sort_key)
+
+    local_sources = {t.get('source') for t in local_terms}
+    top_pool = sorted(
+        (t for t in terms if t.get('source') not in local_sources),
+        key=sort_key,
     )
-    top_indices = set(by_freq[:max(0, top_n)])
+    top_terms = top_pool[:max(0, top_n)]
 
-    selected = [terms[i] for i in (local_indices | top_indices)]
-    selected.sort(key=lambda t: (-t.get('frequency', 0), t.get('source', '')))
-    return selected[:max_terms]
+    # Local hits are protected — they fill the budget first, then top-N.
+    if max_terms <= 0:
+        return []
+    if len(local_terms) >= max_terms:
+        return local_terms[:max_terms]
+    remaining = max_terms - len(local_terms)
+    return local_terms + top_terms[:remaining]
 
 
 def format_terms_for_prompt(terms):

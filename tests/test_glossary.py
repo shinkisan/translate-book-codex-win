@@ -178,6 +178,83 @@ class LoadGlossaryTests(unittest.TestCase):
                 glossary.load_glossary(path)
             self.assertIn("'terms'", str(ctx.exception))
 
+    def test_rejects_non_string_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'glossary.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'version': 1,
+                    'terms': [{'source': 42, 'target': 'forty-two'}],
+                }, f)
+            with self.assertRaises(ValueError) as ctx:
+                glossary.load_glossary(path)
+            msg = str(ctx.exception)
+            self.assertIn("'source'", msg)
+            self.assertIn("string", msg)
+
+    def test_rejects_non_string_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'glossary.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'version': 1,
+                    'terms': [{'source': 'Manhattan', 'target': None}],
+                }, f)
+            with self.assertRaises(ValueError) as ctx:
+                glossary.load_glossary(path)
+            self.assertIn("'target'", str(ctx.exception))
+
+    def test_rejects_non_string_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'glossary.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'version': 1,
+                    'terms': [{'source': 'Manhattan', 'target': '曼哈顿', 'category': 99}],
+                }, f)
+            with self.assertRaises(ValueError) as ctx:
+                glossary.load_glossary(path)
+            self.assertIn("'category'", str(ctx.exception))
+
+    def test_rejects_non_int_frequency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'glossary.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'version': 1,
+                    'terms': [{'source': 'Manhattan', 'target': '曼哈顿', 'frequency': 'a lot'}],
+                }, f)
+            with self.assertRaises(ValueError) as ctx:
+                glossary.load_glossary(path)
+            self.assertIn("'frequency'", str(ctx.exception))
+
+    def test_rejects_bool_frequency(self):
+        # bool is a subclass of int — must be explicitly rejected so a typo
+        # like `"frequency": true` doesn't silently pass.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'glossary.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'version': 1,
+                    'terms': [{'source': 'Manhattan', 'target': '曼哈顿', 'frequency': True}],
+                }, f)
+            with self.assertRaises(ValueError) as ctx:
+                glossary.load_glossary(path)
+            self.assertIn("'frequency'", str(ctx.exception))
+
+    def test_rejects_non_int_top_n(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'glossary.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'version': 1,
+                    'terms': [],
+                    'high_frequency_top_n': "twenty",
+                }, f)
+            with self.assertRaises(ValueError) as ctx:
+                glossary.load_glossary(path)
+            self.assertIn("'high_frequency_top_n'", str(ctx.exception))
+
     def test_version_mismatch_raises_actionable_message(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'glossary.json')
@@ -215,6 +292,50 @@ class SelectTermsForChunkTests(unittest.TestCase):
         chunk_text = "no local hits here"
         selected = glossary.select_terms_for_chunk(g, chunk_text, max_terms=5)
         self.assertEqual(len(selected), 5)
+
+    def test_local_hits_protected_when_max_terms_caps_union(self):
+        # Regression for codex P1: 40 high-frequency global terms + 20
+        # low-frequency local terms with max_terms=50 must not squeeze the
+        # local hits out. Local hits are the primary value of the table.
+        global_pairs = [(f"Global{i:03d}", f"全局{i:03d}") for i in range(40)]
+        local_pairs = [(f"Local{i:03d}", f"本章{i:03d}") for i in range(20)]
+        g = make_glossary(*(global_pairs + local_pairs), top_n=40)
+
+        # Globals are high-frequency; locals are low-frequency.
+        for i, term in enumerate(g['terms']):
+            if term['source'].startswith('Global'):
+                term['frequency'] = 1000 - i
+            else:
+                term['frequency'] = 1
+
+        chunk_text = ' '.join(p[0] for p in local_pairs)
+        selected = glossary.select_terms_for_chunk(g, chunk_text, max_terms=50)
+
+        sources = {t['source'] for t in selected}
+        local_in_selected = sum(1 for s in sources if s.startswith('Local'))
+        self.assertEqual(local_in_selected, 20)
+        self.assertEqual(len(selected), 50)
+
+    def test_local_hits_use_boundary_match_for_ascii(self):
+        # Regression for codex P2: bare `source in chunk_text` would match
+        # 'cat' inside 'category'. The selector must reuse the boundary-aware
+        # matcher so the ASCII promise from count_frequencies holds here too.
+        g = make_glossary(('cat', '猫'), ('Manhattan', '曼哈顿'), top_n=0)
+        chunk_text = "category and concatenate only — no real cats here"
+
+        selected = glossary.select_terms_for_chunk(g, chunk_text)
+
+        self.assertEqual(selected, [])
+
+    def test_local_hits_skip_single_cjk_char(self):
+        # Single-CJK-char source would over-match as substring; selector
+        # must drop it the same way count_frequencies does.
+        g = make_glossary(('的', 'of'), top_n=0)
+        chunk_text = "这是一段中文，包含很多的字符的的的的"
+
+        selected = glossary.select_terms_for_chunk(g, chunk_text)
+
+        self.assertEqual(selected, [])
 
     def test_sorted_by_frequency_desc(self):
         g = make_glossary(('A', 'a'), ('B', 'b'), ('C', 'c'), top_n=3)
