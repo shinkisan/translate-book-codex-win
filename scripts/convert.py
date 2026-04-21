@@ -11,6 +11,7 @@ import zipfile
 import shutil
 import tempfile
 import argparse
+import bisect
 import glob
 import re
 
@@ -210,17 +211,76 @@ def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False):
         return False
 
 
+_PAGE_SEQUENCE_MIN_LENGTH = 4
+_PAGE_SEQUENCE_MIN_RATIO = 0.5
+
+
+def _detect_page_number_lines(lines):
+    """Detect standalone-digit lines that form a monotonic page-number sequence.
+
+    Returns a set of line indices that should be dropped as page numbers.
+
+    Algorithm: collect every standalone-digit line in document order, find the
+    Longest Non-Decreasing Subsequence (LNDS) of their integer values via
+    bisect_right with parent-pointer reconstruction. If the LNDS is long enough
+    and covers a large enough fraction of all standalone digits, treat those
+    elements as page numbers. Outliers (years like 1984, chapter numbers,
+    citation indices) sit off the monotonic spine and stay preserved.
+    """
+    digit_indices = []
+    digit_values = []
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.isdigit():
+            digit_indices.append(i)
+            digit_values.append(int(s))
+
+    n = len(digit_values)
+    if n < _PAGE_SEQUENCE_MIN_LENGTH:
+        return set()
+
+    tails = []
+    tails_idx = []
+    parents = [-1] * n
+
+    for i, v in enumerate(digit_values):
+        pos = bisect.bisect_right(tails, v)
+        if pos > 0:
+            parents[i] = tails_idx[pos - 1]
+        if pos == len(tails):
+            tails.append(v)
+            tails_idx.append(i)
+        else:
+            tails[pos] = v
+            tails_idx[pos] = i
+
+    lnds = []
+    cur = tails_idx[-1]
+    while cur != -1:
+        lnds.append(cur)
+        cur = parents[cur]
+    lnds.reverse()
+
+    if len(lnds) < _PAGE_SEQUENCE_MIN_LENGTH:
+        return set()
+    if len(lnds) / n < _PAGE_SEQUENCE_MIN_RATIO:
+        return set()
+
+    return {digit_indices[i] for i in lnds}
+
+
 def clean_calibre_markers(content, strip_page_numbers=False):
     """Clean up Calibre-specific markers from markdown content.
 
-    Standalone digit lines (years like 1984, chapter numbers, citation indices)
-    are preserved by default. They were previously deleted unconditionally,
-    which destroyed real content. They are still dropped when adjacent to
-    Calibre noise markers (::: fences, .ct}/.cn} attribute leftovers).
+    Standalone digit lines are handled in two layers:
+      1. If a line is adjacent to Calibre noise (::: fence, .ct}/.cn} marker),
+         drop it — clearly leftover.
+      2. Otherwise, run LNDS over all standalone digits to detect a monotonic
+         page-number sequence and drop those. Outliers like years (1984),
+         chapter numbers, and citation indices stay preserved.
 
-    Pass strip_page_numbers=True to restore aggressive removal of any
-    standalone digit line (legacy behavior, e.g. for PDFs with explicit
-    page-number footers).
+    Pass strip_page_numbers=True to bypass both layers and aggressively delete
+    every standalone-digit line (legacy behavior).
     """
     content = re.sub(r'\{\.calibre[^}]*\}', '', content)
     content = re.sub(r'\(#calibre_link-\d+\)', '', content)
@@ -232,6 +292,8 @@ def clean_calibre_markers(content, strip_page_numbers=False):
     content = re.sub(r'\[\*\*([^*]+)\*\*\]', r'**\1**', content)
 
     lines = content.split('\n')
+
+    page_number_lines = set() if strip_page_numbers else _detect_page_number_lines(lines)
 
     def is_calibre_noise(line):
         s = line.strip()
@@ -266,6 +328,8 @@ def clean_calibre_markers(content, strip_page_numbers=False):
 
         if re.match(r'^\s*\d+\s*$', line):
             if strip_page_numbers:
+                continue
+            if i in page_number_lines:
                 continue
             prev = prev_nonblank(i)
             nxt = next_nonblank(i)
@@ -599,6 +663,43 @@ def _do_split_and_manifest(temp_dir, input_md, chunk_size):
     return len(chunk_files)
 
 
+def _check_strip_page_numbers_cache_conflict(strip_flag, temp_dir, input_md):
+    """Return list of cached files that would silently neutralize --strip-page-numbers.
+
+    The flag only takes effect inside clean_calibre_markers, which runs during
+    HTML→Markdown conversion. If input.md or chunk*.md already exist from a
+    prior run, both are reused as-is and the flag becomes a no-op. Surface
+    that conflict so the user knows to clean up.
+    """
+    if not strip_flag:
+        return []
+    if not os.path.isdir(temp_dir):
+        return []
+
+    blockers = []
+    if os.path.exists(input_md):
+        blockers.append(input_md)
+
+    existing_chunks = [
+        f for f in glob.glob(os.path.join(temp_dir, 'chunk*.md'))
+        if not os.path.basename(f).startswith('output_')
+    ]
+    if existing_chunks:
+        blockers.append(f"{len(existing_chunks)} chunk file(s) under {temp_dir}/")
+
+    return blockers
+
+
+def _abort_on_strip_cache_conflict(blockers, temp_dir):
+    if not blockers:
+        return
+    print("Error: --strip-page-numbers cannot take effect because cached files exist:")
+    for b in blockers:
+        print(f"  - {b}")
+    print(f"Delete the cached files (or remove the entire {temp_dir}/ directory) and re-run.")
+    sys.exit(1)
+
+
 def main():
     """Main conversion function"""
     parser = argparse.ArgumentParser(description="Convert PDF/DOCX/EPUB to markdown chunks via HTMLZ")
@@ -665,6 +766,10 @@ def main():
                     print(f"Warning: Could not read metadata from config: {e}")
 
             input_md = os.path.join(temp_dir, "input.md")
+            _abort_on_strip_cache_conflict(
+                _check_strip_page_numbers_cache_conflict(args.strip_page_numbers, temp_dir, input_md),
+                temp_dir,
+            )
             if os.path.exists(input_md):
                 print(f"Skipping HTML to Markdown conversion - input.md already exists")
             else:
@@ -697,6 +802,10 @@ def main():
             input_html = os.path.join(temp_dir, "input.html")
             input_md = os.path.join(temp_dir, "input.md")
 
+            _abort_on_strip_cache_conflict(
+                _check_strip_page_numbers_cache_conflict(args.strip_page_numbers, temp_dir, input_md),
+                temp_dir,
+            )
             if os.path.exists(input_md):
                 print(f"Skipping HTML to Markdown conversion - input.md already exists")
             else:

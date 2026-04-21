@@ -157,7 +157,7 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | `Missing source chunk` | Source file deleted — re-run `convert.py` to regenerate |
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |
 | Changed title/template/assets but output didn't update | Delete existing `output.md`, `book*.html`, `book.docx`, `book.epub`, `book.pdf` from the temp dir, then re-run `merge_and_build.py` |
-| Want page-number footers stripped from PDF output | Pass `--strip-page-numbers` to `convert.py`. By default, standalone digit lines (years, chapter numbers, citation indices) are preserved as content. |
+| Want page-number footers stripped from PDF output | By default, monotonic page-number sequences (e.g. `1, 2, 3, ...`) are auto-detected and dropped while outliers like years (`1984`), chapter numbers, and citation indices stay preserved. If detection misses your case, pass `--strip-page-numbers` to `convert.py` to aggressively delete every standalone-digit line. The flag aborts if a cached `input.md` or `chunk*.md` already exists — delete them first so the flag actually takes effect. |
 | `output.md exists but manifest invalid` | Stale output — the script auto-deletes and re-merges |
 | PDF generation fails | Ensure Calibre is installed with PDF output support |
 
