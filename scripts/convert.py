@@ -174,7 +174,7 @@ def setup_temp_directory(input_file, html_file, images_dir):
         return None
 
 
-def convert_html_to_markdown(html_file, md_file):
+def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False):
     """Convert HTML to Markdown using pandoc"""
     try:
         import pypandoc
@@ -192,7 +192,7 @@ def convert_html_to_markdown(html_file, md_file):
 
             content = content.replace('\ufeff', '')
             content = content.replace('\u00a0', ' ')
-            content = clean_calibre_markers(content)
+            content = clean_calibre_markers(content, strip_page_numbers=strip_page_numbers)
 
             with open(md_file, 'w', encoding='utf-8') as f:
                 f.write(content)
@@ -210,8 +210,18 @@ def convert_html_to_markdown(html_file, md_file):
         return False
 
 
-def clean_calibre_markers(content):
-    """Clean up Calibre-specific markers from markdown content"""
+def clean_calibre_markers(content, strip_page_numbers=False):
+    """Clean up Calibre-specific markers from markdown content.
+
+    Standalone digit lines (years like 1984, chapter numbers, citation indices)
+    are preserved by default. They were previously deleted unconditionally,
+    which destroyed real content. They are still dropped when adjacent to
+    Calibre noise markers (::: fences, .ct}/.cn} attribute leftovers).
+
+    Pass strip_page_numbers=True to restore aggressive removal of any
+    standalone digit line (legacy behavior, e.g. for PDFs with explicit
+    page-number footers).
+    """
     content = re.sub(r'\{\.calibre[^}]*\}', '', content)
     content = re.sub(r'\(#calibre_link-\d+\)', '', content)
 
@@ -222,16 +232,48 @@ def clean_calibre_markers(content):
     content = re.sub(r'\[\*\*([^*]+)\*\*\]', r'**\1**', content)
 
     lines = content.split('\n')
-    cleaned_lines = []
 
-    for line in lines:
+    def is_calibre_noise(line):
+        s = line.strip()
+        if not s:
+            return False
+        if s.startswith(':::'):
+            return True
+        if s.endswith('.ct}') or s.endswith('.cn}'):
+            return True
+        return False
+
+    def prev_nonblank(idx):
+        for j in range(idx - 1, -1, -1):
+            if lines[j].strip():
+                return lines[j]
+        return None
+
+    def next_nonblank(idx):
+        for j in range(idx + 1, len(lines)):
+            if lines[j].strip():
+                return lines[j]
+        return None
+
+    cleaned_lines = []
+    for i, line in enumerate(lines):
         stripped_line = line.strip()
+
         if stripped_line.startswith(':::'):
-            continue
-        if re.match(r'^\s*\d+\s*$', line):
             continue
         if stripped_line.endswith('.ct}') or stripped_line.endswith('.cn}'):
             continue
+
+        if re.match(r'^\s*\d+\s*$', line):
+            if strip_page_numbers:
+                continue
+            prev = prev_nonblank(i)
+            nxt = next_nonblank(i)
+            if (prev is not None and is_calibre_noise(prev)) or \
+               (nxt is not None and is_calibre_noise(nxt)):
+                continue
+            # else: preserve as real content
+
         cleaned_lines.append(line)
 
     content = '\n'.join(cleaned_lines)
@@ -564,6 +606,12 @@ def main():
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
     parser.add_argument("--chunk-size", type=int, default=6000, help="Target chunk size in characters (default: 6000)")
+    parser.add_argument(
+        "--strip-page-numbers",
+        action="store_true",
+        help="Aggressively delete every standalone-digit line (legacy behavior). "
+             "Default is off: standalone digits are preserved unless adjacent to Calibre noise.",
+    )
 
     args = parser.parse_args()
     input_file = args.input_file
@@ -620,7 +668,7 @@ def main():
             if os.path.exists(input_md):
                 print(f"Skipping HTML to Markdown conversion - input.md already exists")
             else:
-                if not convert_html_to_markdown(input_html_path, input_md):
+                if not convert_html_to_markdown(input_html_path, input_md, strip_page_numbers=args.strip_page_numbers):
                     sys.exit(1)
 
             chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)
@@ -652,7 +700,7 @@ def main():
             if os.path.exists(input_md):
                 print(f"Skipping HTML to Markdown conversion - input.md already exists")
             else:
-                if not convert_html_to_markdown(input_html, input_md):
+                if not convert_html_to_markdown(input_html, input_md, strip_page_numbers=args.strip_page_numbers):
                     sys.exit(1)
 
             chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)

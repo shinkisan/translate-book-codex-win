@@ -157,6 +157,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
 | 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |
+| 想去掉 PDF 输出中的页码 | 给 `convert.py` 加 `--strip-page-numbers` 标志。默认情况下，独立的数字行（年份、章节编号、引用编号）作为正文内容保留 |
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
 | PDF 生成失败 | 确认 Calibre 已安装且支持 PDF 输出 |
 
