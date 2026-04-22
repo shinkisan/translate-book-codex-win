@@ -336,8 +336,8 @@ def cmd_prepare_merge(temp_dir):
 
     # Compute the set of every surface that's already a glossary source OR
     # could become a standalone source via this batch's auto_apply / decisions.
-    # Used to filter alias hypotheses — if the candidate has zero chance of
-    # ending up as a glossary source, the hypothesis is moot.
+    # The variant collision check uses this — we don't emit a regular alias
+    # decision for a variant that another decision kind already owns.
     potential_standalone_sources = set(surface_idx.keys())  # everything currently in glossary
     for entry in auto_apply:
         potential_standalone_sources.add(entry['entity']['source'])
@@ -349,23 +349,47 @@ def cmd_prepare_merge(temp_dir):
         elif d['kind'] == 'alias_or_new_entity':
             potential_standalone_sources.add(d['variant'])
 
-    # Alias hypotheses: emit a decision if the candidate is in (or could become)
-    # a glossary source. Variant must NOT also be a potential standalone source
-    # — those collisions are owned by alias_or_new_entity / new_entity_existing_alias.
+    # Alias hypotheses: emit a decision if the candidate is — or could become —
+    # any glossary surface (source OR alias). Variant must NOT also be a
+    # potential standalone source; those collisions are owned by
+    # alias_or_new_entity / new_entity_existing_alias.
+    #
+    # Alias chains are handled by iterating until fixed point: a hypothesis
+    # `Taighi → Taig` is moot when first inspected if Taig isn't anywhere yet,
+    # but it becomes resolvable after a sibling hypothesis `Taig → Tai` is
+    # emitted — Taig will be a glossary alias by apply time. We loop until no
+    # new decisions get emitted in a pass.
     #
     # candidate_source is preserved verbatim — apply-merge re-resolves at
-    # dispatch time after all entity-creating decisions have run.
+    # dispatch time, after all entity-creating decisions have run AND after
+    # earlier alias attachments have made new surfaces resolvable.
+    pending_alias_hyps = []
     for chunk_id, data in loaded.items():
         for ah in data.get('alias_hypotheses', []):
             variant = ah['variant']
             candidate_source = ah['may_be_alias_of_source']
             if (chunk_id, variant, candidate_source) in consumed_alias_keys:
                 continue  # already wrapped into an alias_or_new_entity decision
-            if candidate_source not in potential_standalone_sources:
-                continue  # candidate has no path to glossary; hypothesis is moot
+            pending_alias_hyps.append((chunk_id, ah))
+
+    # potential_surfaces = anything that might be a resolvable surface at apply
+    # time. Starts with current glossary surfaces + every potential standalone
+    # source. Grows as we emit alias decisions (each new alias variant becomes
+    # a resolvable surface once attached to its candidate's term).
+    potential_surfaces = set(surface_idx.keys()) | potential_standalone_sources
+
+    while pending_alias_hyps:
+        next_pending = []
+        progressed = False
+        for chunk_id, ah in pending_alias_hyps:
+            variant = ah['variant']
+            candidate_source = ah['may_be_alias_of_source']
+            if candidate_source not in potential_surfaces:
+                next_pending.append((chunk_id, ah))
+                continue
             if variant in potential_standalone_sources:
-                # Variant is or could become a standalone source via another
-                # decision; that path owns the alias-vs-standalone choice.
+                # Variant is owned by a standalone-creating decision elsewhere;
+                # silently skip (was the moot rule).
                 continue
             decisions_needed.append({
                 'id': _new_decision_id(),
@@ -375,6 +399,11 @@ def cmd_prepare_merge(temp_dir):
                 'evidence': ah['evidence'],
                 'options': ['yes_alias', 'no_separate_entity', 'skip'],
             })
+            potential_surfaces.add(variant)  # downstream chains can now resolve through it
+            progressed = True
+        if not progressed:
+            break  # remaining hypotheses are truly moot
+        pending_alias_hyps = next_pending
 
     # Sub-agent-flagged conflicts.
     for chunk_id, data in loaded.items():
@@ -592,23 +621,16 @@ def cmd_apply_merge(temp_dir):
 
     # Phase 3: process decisions. All choices have been pre-validated above.
     #
-    # Decisions are dispatched in two sub-passes regardless of input order:
-    #   Pass A — entity-creating decisions
-    #            (new_entity_existing_alias.promote_to_separate_entity,
-    #             alias_or_new_entity.use_standalone_N,
-    #             conflicting_new_entity_proposals.use_variant_N)
-    #   Pass B — alias-attaching and conflict-resolving decisions
-    #            (alias.yes_alias, alias_or_new_entity.yes_alias, conflict.*)
+    # Dispatch order is INDEPENDENT of input order:
+    #   Pass A — entity-creating decisions, in input order
+    #   Pass B — non-alias followers (conflicts + no-op skips), in input order
+    #   Pass C — alias-attachers (alias.yes_alias, alias_or_new_entity.yes_alias),
+    #            iterated to fixed point so chains like Taighi → Taig → Tai
+    #            resolve regardless of which alias decision came first.
     #
-    # This makes the orchestrator's job order-independent: yes_alias decisions
-    # whose candidate is created by a same-batch decision will succeed because
-    # Pass A has already added the candidate to the glossary by the time Pass B
-    # looks it up. Within each pass, input order is preserved for determinism.
-    #
-    # Any referential failure during dispatch (entity not in glossary, etc.) is
-    # collected into `errors`; if non-empty after both passes, the entire
-    # transaction aborts so the orchestrator can re-attempt with a corrected
-    # payload.
+    # Any referential failure (entity not in glossary, etc.) is collected; if
+    # non-empty after all passes, the entire transaction aborts so the
+    # orchestrator can re-attempt.
 
     def _is_creator(d):
         kind = d['kind']
@@ -621,10 +643,20 @@ def cmd_apply_merge(temp_dir):
             return choice.startswith('use_variant_')
         return False
 
-    creator_decisions = [d for d in decisions if _is_creator(d)]
-    follower_decisions = [d for d in decisions if not _is_creator(d)]
+    def _is_alias_attacher(d):
+        kind = d['kind']
+        choice = d['choice']
+        if kind == 'alias':
+            return choice == 'yes_alias'
+        if kind == 'alias_or_new_entity':
+            return choice == 'yes_alias'
+        return False
 
-    for d in creator_decisions + follower_decisions:
+    def _dispatch(d):
+        """Apply one decision. Returns (changed, err_or_None). `changed` is
+        True if the dispatch did meaningful work (or was a real no-op like
+        keep_current), False only if a referential lookup failed and the
+        caller should retry later."""
         d_id = d.get('id')
         kind = d['kind']
         choice = d['choice']
@@ -635,16 +667,15 @@ def cmd_apply_merge(temp_dir):
                 candidate_source = d.get('candidate_source')
                 term = _find_term_by_surface(glossary, candidate_source)
                 if term is None:
-                    errors.append(
+                    return False, (
                         f"decision {d_id!r}: candidate source {candidate_source!r} "
                         f"not in glossary"
                     )
-                    continue
                 if variant not in term.get('aliases', []):
                     term.setdefault('aliases', []).append(variant)
-            decisions_resolved += 1
+            return True, None
 
-        elif kind == 'conflict':
+        if kind == 'conflict':
             entity_source = d.get('entity_source')
             field = d.get('field')
             current = d.get('current')
@@ -652,10 +683,9 @@ def cmd_apply_merge(temp_dir):
             evidence = d.get('evidence', '')
             term = _find_term_by_surface(glossary, entity_source)
             if term is None:
-                errors.append(
+                return False, (
                     f"decision {d_id!r}: entity_source {entity_source!r} not in glossary"
                 )
-                continue
             if choice == 'record_in_notes':
                 _append_note(
                     term,
@@ -670,9 +700,9 @@ def cmd_apply_merge(temp_dir):
                     f"[updated] {field}: was={old_value!r} now={proposed!r}",
                 )
             # keep_current: no-op
-            decisions_resolved += 1
+            return True, None
 
-        elif kind == 'new_entity_existing_alias':
+        if kind == 'new_entity_existing_alias':
             if choice == 'promote_to_separate_entity':
                 proposed_source = d.get('proposed_source')
                 host_id = d.get('currently_alias_of')
@@ -681,10 +711,9 @@ def cmd_apply_merge(temp_dir):
                 evidence = d.get('evidence', '')
                 host = _find_term_by_id(glossary, host_id)
                 if host is None:
-                    errors.append(
+                    return False, (
                         f"decision {d_id!r}: host term id={host_id!r} not in glossary"
                     )
-                    continue
                 if proposed_source in host.get('aliases', []):
                     host['aliases'] = [a for a in host['aliases'] if a != proposed_source]
                 glossary['terms'].append({
@@ -699,20 +728,19 @@ def cmd_apply_merge(temp_dir):
                     'evidence_refs': [],
                     'notes': f'promoted from alias of {host_id!r}; evidence={evidence!r}',
                 })
-            decisions_resolved += 1
+            return True, None
 
-        elif kind == 'alias_or_new_entity':
+        if kind == 'alias_or_new_entity':
             variant = d.get('variant')
             candidate_source = d.get('candidate_source')
             standalone_variants = d.get('standalone_variants') or []
             if choice == 'yes_alias':
                 term = _find_term_by_surface(glossary, candidate_source)
                 if term is None:
-                    errors.append(
+                    return False, (
                         f"decision {d_id!r}: candidate source {candidate_source!r} "
                         f"not in glossary"
                     )
-                    continue
                 if variant not in term.get('aliases', []):
                     term.setdefault('aliases', []).append(variant)
             elif choice == 'skip':
@@ -722,9 +750,6 @@ def cmd_apply_merge(temp_dir):
                 m = re.match(r'^use_standalone_(\d+)$', choice)
                 idx = int(m.group(1))
                 chosen = standalone_variants[idx]
-                # Combine evidence_chunks across ALL standalone variants — every
-                # variant attests the surface form exists, even though they
-                # disagreed on the right translation.
                 combined_chunks = sorted({
                     cid for v in standalone_variants for cid in v.get('evidence_chunks', [])
                 })[:EVIDENCE_REFS_CAP]
@@ -740,13 +765,12 @@ def cmd_apply_merge(temp_dir):
                     'evidence_refs': combined_chunks,
                     'notes': '',
                 })
-            decisions_resolved += 1
+            return True, None
 
-        elif kind == 'conflicting_new_entity_proposals':
+        if kind == 'conflicting_new_entity_proposals':
             variants = d.get('variants') or []
             if choice == 'skip':
-                decisions_resolved += 1
-                continue
+                return True, None
             m = re.match(r'^use_variant_(\d+)$', choice)
             idx = int(m.group(1))
             chosen = variants[idx]
@@ -765,7 +789,51 @@ def cmd_apply_merge(temp_dir):
                 'evidence_refs': combined_chunks,
                 'notes': '',
             })
+            return True, None
+
+        # Should never reach here — pre-validation rejects unknown kinds.
+        return True, None
+
+    creators = [d for d in decisions if _is_creator(d)]
+    attachers = [d for d in decisions if _is_alias_attacher(d)]
+    others = [d for d in decisions if not _is_creator(d) and not _is_alias_attacher(d)]
+
+    # Pass A: entity-creators (in input order).
+    for d in creators:
+        changed, err = _dispatch(d)
+        if err is not None:
+            errors.append(err)
+        else:
             decisions_resolved += 1
+
+    # Pass B: non-alias followers (in input order).
+    for d in others:
+        changed, err = _dispatch(d)
+        if err is not None:
+            errors.append(err)
+        else:
+            decisions_resolved += 1
+
+    # Pass C: alias-attachers iterated to fixed point. A chain like
+    # Taighi → Taig → Tai: when Taig is itself a yes_alias decision, the first
+    # iteration may not be able to resolve Taighi → Taig because Taig isn't a
+    # surface yet. The next iteration succeeds after Taig → Tai attaches.
+    pending_attachers = list(attachers)
+    while pending_attachers:
+        next_pending = []
+        progressed = False
+        for d in pending_attachers:
+            changed, err = _dispatch(d)
+            if err is None:
+                decisions_resolved += 1
+                progressed = True
+            else:
+                next_pending.append((d, err))
+        if not progressed:
+            for _, err in next_pending:
+                errors.append(err)
+            break
+        pending_attachers = [d for d, _ in next_pending]
 
     if errors:
         # Don't write the glossary, don't record any hashes. Orchestrator

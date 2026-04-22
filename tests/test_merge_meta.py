@@ -1371,6 +1371,158 @@ class DispatchOrderIndependenceTests(unittest.TestCase):
         self.assertIn('Taig', tai['aliases'])
 
 
+class AliasChainTests(unittest.TestCase):
+    """Bug fix: alias hypotheses can chain through other pending alias decisions.
+    chunk0001: Taig → Tai (Tai in glossary). chunk0002: Taighi → Taig (Taig
+    becomes resolvable after chunk0001's alias is accepted). prepare-merge
+    must surface BOTH decisions, and apply-merge must resolve them regardless
+    of input order."""
+
+    def test_two_step_alias_chain_emits_both_decisions(self):
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'a.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taighi', 'may_be_alias_of_source': 'Taig', 'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        # BOTH alias decisions must appear.
+        alias_decisions = [d for d in out['decisions_needed'] if d['kind'] == 'alias']
+        self.assertEqual(len(alias_decisions), 2)
+        variants = {d['variant']: d['candidate_source'] for d in alias_decisions}
+        self.assertEqual(variants, {'Taig': 'Tai', 'Taighi': 'Taig'})
+
+    def test_two_step_chain_apply_in_input_order(self):
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'a.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taighi', 'may_be_alias_of_source': 'Taig', 'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            # Order: parent (Taig→Tai) first, then child (Taighi→Taig)
+            ordered = sorted(
+                (d for d in out['decisions_needed'] if d['kind'] == 'alias'),
+                key=lambda d: d['variant'] != 'Taig',  # Taig (parent) first
+            )
+            _, err, code = run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': 'yes_alias'} for d in ordered],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            self.assertEqual(code, 0, f"stderr was: {err}")
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        # Both Taig and Taighi attach to Tai.
+        self.assertIn('Taig', tai['aliases'])
+        self.assertIn('Taighi', tai['aliases'])
+
+    def test_two_step_chain_apply_in_reverse_order(self):
+        # Same scenario, but pass child decision FIRST. Fixed-point dispatch
+        # in apply-merge must still resolve the chain.
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'a.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taighi', 'may_be_alias_of_source': 'Taig', 'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            # Reverse order: Taighi (child) first, Taig (parent) second.
+            ordered = sorted(
+                (d for d in out['decisions_needed'] if d['kind'] == 'alias'),
+                key=lambda d: d['variant'] == 'Taig',  # child first
+            )
+            _, err, code = run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': 'yes_alias'} for d in ordered],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            self.assertEqual(code, 0, f"stderr was: {err}")
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertIn('Taig', tai['aliases'])
+        self.assertIn('Taighi', tai['aliases'])
+
+    def test_chain_with_parent_skipped_aborts_child_until_orchestrator_picks_skip(self):
+        # If the orchestrator picks no_separate_entity for the parent
+        # Taig→Tai, the child Taighi→Taig becomes unresolvable. apply-merge
+        # aborts; transactional rollback means hashes aren't recorded, so
+        # prepare-merge surfaces both decisions again. Orchestrator can fix
+        # by also skipping the child.
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'a.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taighi', 'may_be_alias_of_source': 'Taig', 'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d_taig = next(d for d in out['decisions_needed'] if d.get('variant') == 'Taig')
+            d_taighi = next(d for d in out['decisions_needed'] if d.get('variant') == 'Taighi')
+            # Reject parent, attempt child anyway → child can't resolve.
+            _, _, code = run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [
+                    {**d_taig, 'choice': 'no_separate_entity'},
+                    {**d_taighi, 'choice': 'yes_alias'},
+                ],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            self.assertNotEqual(code, 0)
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+            # Atomicity: nothing written, both metas re-surface on retry.
+            self.assertEqual(g['applied_meta_hashes'], {})
+            out2, _ = run_prepare_merge(tmp)
+            self.assertEqual(len(out2['consumed_chunk_ids']), 2)
+
+    def test_three_step_alias_chain(self):
+        # A → B → C → D, all proposed as alias hyps in one batch.
+        existing = make_term('A', 'a')
+        m1 = empty_meta(alias_hypotheses=[
+            {'variant': 'B', 'may_be_alias_of_source': 'A', 'evidence': '1.'},
+        ])
+        m2 = empty_meta(alias_hypotheses=[
+            {'variant': 'C', 'may_be_alias_of_source': 'B', 'evidence': '2.'},
+        ])
+        m3 = empty_meta(alias_hypotheses=[
+            {'variant': 'D', 'may_be_alias_of_source': 'C', 'evidence': '3.'},
+        ])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2, 'chunk0003': m3}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            self.assertEqual(len([d for d in out['decisions_needed']
+                                  if d['kind'] == 'alias']), 3)
+            # Pass in arbitrary order.
+            decisions = [
+                {**d, 'choice': 'yes_alias'}
+                for d in out['decisions_needed'] if d['kind'] == 'alias'
+            ]
+            decisions.reverse()  # D, C, B order
+            _, err, code = run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': decisions,
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            self.assertEqual(code, 0, f"stderr was: {err}")
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        a = next(t for t in g['terms'] if t['source'] == 'A')
+        # All three variants attach to A.
+        self.assertIn('B', a['aliases'])
+        self.assertIn('C', a['aliases'])
+        self.assertIn('D', a['aliases'])
+
+
 class StatusTests(unittest.TestCase):
     def test_reports_translated_meta_consumed_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
