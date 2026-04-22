@@ -174,6 +174,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ） |
 | `scripts/manifest.py` | Chunk manifest：SHA-256 追踪与合并校验 |
 | `scripts/glossary.py` | 术语表管理：为每个 chunk 生成专属术语对照表，保证全书译名一致 |
+| `scripts/meta.py` | 子 agent 单 chunk 观察文件 schema（`output_chunkNNNN.meta.json`） |
+| `scripts/merge_meta.py` | 批次边界合并：子 agent 观察 → canonical 术语表 |
 | `scripts/merge_and_build.py` | 合并 chunks → HTML → DOCX/EPUB/PDF |
 | `scripts/calibre_html_publish.py` | Calibre 格式转换封装 |
 | `scripts/template.html` | 网页 HTML 模板，含浮动目录 |
@@ -204,9 +206,9 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 - **保守合并**。新实体必须有证据；别名合并需要 LLM 判断,不能仅靠字符串相似度；性别默认 `unknown`,仅在显式证据下才升级；canonical 值在冲突时不会被静默覆盖。
 - **三层状态,三个独立文件**。`glossary.json`（canonical,子 agent 读取）、`output_chunkNNNN.meta.json`（子 agent 原始观察）、`run_state.json`（编排状态）。
 
-### Phase 1 — 子 agent 反馈 + 术语表合并（未开始）
+### Phase 1 — 子 agent 反馈 + 术语表合并（已发布）
 
-杠杆最大的一步。当前子 agent 只能读术语表,无法把翻译过程中发现的新信息写回。本阶段闭环:`glossary.json` schema → v2（新增 `id`、`aliases`、`gender`、`confidence`、`evidence_refs`、`notes`）；新增 `output_chunkNNNN.meta.json` 记录子 agent 的观察（新实体、别名假设、属性假设、使用的 entity id、冲突）；新增 `scripts/merge_meta.py` 处理批次边界的合并；SKILL.md Step 4 扩展,子 agent 在输出译文的同时生成 meta 文件,主 agent 在每批结束后合并。
+闭合读写回路。术语表 v2 新增 `id`、`aliases`、`gender`、`confidence`、`evidence_refs`、`notes`（v1 文件首次加载时自动升级；术语表现在是 3 列，`aliases` 参与选词链路）。子 agent 在输出译文的同时生成 `output_chunkNNNN.meta.json`。新增 `scripts/merge_meta.py`（`prepare-merge` / `apply-merge` / `status`）按批次执行保守合并：跨术语 surface form 唯一性、坏 meta 隔离（warn + skip + count）、`evidence_chunks` 与 `used_term_sources` 双路 confidence 升级、FIFO 上限 5。详见 SKILL.md Step 4 / Step 4.5 / Step 5。
 
 ### Phase 2 — 代词的邻居上下文（未开始,独立于 Phase 1）
 

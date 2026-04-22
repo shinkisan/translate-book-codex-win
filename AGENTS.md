@@ -10,6 +10,8 @@ translate-book is a Codex Skill that translates books (PDF/DOCX/EPUB) into any l
 - `scripts/convert.py` — PDF/DOCX/EPUB → Markdown chunks (via Calibre HTMLZ)
 - `scripts/manifest.py` — SHA-256 chunk tracking and merge validation
 - `scripts/glossary.py` — Term-consistency glossary; per-chunk term tables injected into sub-agent prompts
+- `scripts/meta.py` — Per-chunk sub-agent observation file schema
+- `scripts/merge_meta.py` — Batch-boundary merge of sub-agent observations into the canonical glossary
 - `scripts/merge_and_build.py` — Merge translated chunks → HTML/DOCX/EPUB/PDF
 - `scripts/calibre_html_publish.py` — Calibre format conversion wrapper
 - `scripts/template.html`, `scripts/template_ebook.html` — HTML templates

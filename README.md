@@ -174,6 +174,8 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks via Calibre HTMLZ |
 | `scripts/manifest.py` | Chunk manifest: SHA-256 tracking and merge validation |
 | `scripts/glossary.py` | Glossary management: per-chunk term tables for consistent terminology |
+| `scripts/meta.py` | Per-chunk sub-agent observation file schema (`output_chunkNNNN.meta.json`) |
+| `scripts/merge_meta.py` | Batch-boundary merge: sub-agent observations → canonical glossary |
 | `scripts/merge_and_build.py` | Merge chunks → HTML → DOCX/EPUB/PDF |
 | `scripts/calibre_html_publish.py` | Calibre wrapper for format conversion |
 | `scripts/template.html` | Web HTML template with floating TOC |
@@ -204,9 +206,9 @@ Tracking [issue #7](https://github.com/deusyu/translate-book/issues/7) — name/
 - **Conservative merge.** New entities require evidence; alias merges need LLM judgment, not just string similarity; gender starts at `unknown` and only moves up under explicit evidence; canonical values aren't silently overwritten on conflict.
 - **Three-layer state, three separate files.** `glossary.json` (canonical, sub-agents read), `output_chunkNNNN.meta.json` (raw per-chunk observations), `run_state.json` (orchestration).
 
-### Phase 1 — Sub-agent feedback + glossary merge (not started)
+### Phase 1 — Sub-agent feedback + glossary merge (shipped)
 
-The largest leverage point. Today sub-agents read the glossary but can't write back what they discover. This phase closes the loop: `glossary.json` schema → v2 (`id`, `aliases`, `gender`, `confidence`, `evidence_refs`, `notes`); new `output_chunkNNNN.meta.json` for sub-agent observations; new `scripts/merge_meta.py` for batch-boundary merging; SKILL.md Step 4 extended so sub-agents emit a meta file alongside the translation and the main agent merges after each batch.
+Closes the read+write loop. Glossary v2 adds `id`, `aliases`, `gender`, `confidence`, `evidence_refs`, `notes` (v1 files auto-upgrade on first load; the term table is now 3-col and aliases participate in selection). Sub-agents emit `output_chunkNNNN.meta.json` alongside each translated chunk. `scripts/merge_meta.py` (`prepare-merge` / `apply-merge` / `status`) merges per-batch with conservative rules: surface-form uniqueness enforced, malformed metas quarantined (warn + skip + count), confidence escalation via both `evidence_chunks` and `used_term_sources`, FIFO-cap at 5. See SKILL.md Step 4 / Step 4.5 / Step 5.
 
 ### Phase 2 — Neighbor context for pronouns (not started, independent of Phase 1)
 

@@ -203,6 +203,50 @@ markdown文件正文:
 
 ---
 
+### 4.5. Merge Sub-Agent Meta Into Glossary (after each batch)
+
+Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translated chunk. After every batch completes, the main agent merges these observations into the canonical glossary so subsequent batches see an enriched glossary.
+
+1. Run prepare-merge:
+
+   ```bash
+   python3 {baseDir}/scripts/merge_meta.py prepare-merge "<temp_dir>"
+   ```
+
+   Capture stdout JSON. It contains four arrays:
+   - `auto_apply` — new entities with no glossary collision and unanimous (target, category) across all proposing chunks.
+   - `decisions_needed` — items requiring main-agent judgment. Each has `id`, `kind`, an `options` array, and the data needed to pick. Kinds:
+     - `alias` — `{variant, candidate_source, evidence}`. Choices: `yes_alias` / `no_separate_entity` / `skip`.
+     - `conflict` — `{entity_source, field, current, proposed, evidence}`. Choices: `keep_current` / `accept_proposed` / `record_in_notes`.
+     - `new_entity_existing_alias` — `{proposed_source, currently_alias_of, proposed_target, proposed_category, evidence}`. Choices: `promote_to_separate_entity` / `keep_as_alias` / `skip`.
+     - `conflicting_new_entity_proposals` — `{source, variants: [{target_proposal, category, evidence, evidence_chunks}, ...]}`. Choices: `use_variant_0`, `use_variant_1`, ..., `skip`.
+   - `consumed_chunk_ids` — every meta file scanned this round (regardless of whether it produced a finding). These hashes get recorded in `applied_meta_hashes` on apply.
+   - `malformed_meta_chunk_ids` — meta files that failed validation. Quarantined: not consumed, not crashing the run. Surface them in your batch progress.
+
+2. **If `consumed_chunk_ids` is empty** → nothing was scanned; skip to Step 5.
+
+3. **If `consumed_chunk_ids` is non-empty but both `auto_apply` and `decisions_needed` are empty** → still pipe `{"auto_apply": [], "decisions": [], "consumed_chunk_ids": [...]}` into `apply-merge` so the hashes get recorded. **Skipping this is the bug** — no-op metas would re-scan forever otherwise.
+
+4. **Otherwise, resolve each decision**:
+   - Read its evidence quotes inline.
+   - Pick one option from its `options` array.
+   - Build a `decisions` entry that round-trips the original decision plus your choice. The entry MUST include the original `kind` and (for `conflicting_new_entity_proposals`) the `variants` array, so apply-merge can validate and act:
+
+     ```json
+     {"id": "d1", "kind": "alias", "variant": "Taig", "candidate_source": "Tai", "choice": "yes_alias"}
+     ```
+
+5. Pipe the decisions JSON into apply-merge:
+
+   ```bash
+   echo '{"auto_apply": [...], "decisions": [...], "consumed_chunk_ids": [...]}' \
+     | python3 {baseDir}/scripts/merge_meta.py apply-merge "<temp_dir>"
+   ```
+
+   Surface the summary JSON (`auto_applied`, `decisions_resolved`, `consumed_chunks`, `errors`) in your batch progress message.
+
+On a fresh run after a previous interrupted batch, `prepare-merge` will pick up any meta files left behind. Don't manually delete them.
+
 ### 5. Verify Completeness and Retry
 
 After all batches complete, use Glob to check that every source chunk has a corresponding output file.
@@ -213,7 +257,23 @@ Also read `manifest.json` and verify:
 - Every chunk id has a corresponding output file
 - No output file is empty (0 bytes)
 
-Report any chunks that failed after retry.
+Then run the meta-merge observability snapshot:
+
+```bash
+python3 {baseDir}/scripts/merge_meta.py status "<temp_dir>"
+```
+
+Surface a one-line summary in the verification report:
+
+> Translated chunks: 50 • Meta files: 48 found / 47 consumed • Malformed: 1 (chunk0099 — see stderr) • Chunks missing meta: chunk0017, chunk0042
+
+Severity rules (none of these fail the run — meta is non-blocking):
+
+- `unmerged_meta_files > 0` after Step 4.5 ran → bug, flag prominently. Resume should have caught this.
+- `malformed_meta_files > 0` → sub-agent emitted invalid meta; print chunk_ids and a "fix the file by hand and re-run if you want this chunk's feedback merged" note.
+- `meta_files_found < translated_chunks` → sub-agent-compliance issue (some chunks didn't emit meta at all). Print missing chunk_ids.
+
+Report any chunks that failed translation after retry.
 
 ### 6. Translate Book Title
 
