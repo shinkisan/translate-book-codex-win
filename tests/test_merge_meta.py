@@ -910,9 +910,11 @@ class AliasOrNewEntityCollisionTests(unittest.TestCase):
         self.assertEqual(d['kind'], 'alias_or_new_entity')
         self.assertEqual(d['variant'], 'Taig')
         self.assertEqual(d['candidate_source'], 'Tai')
-        self.assertEqual(d['proposed_target'], '泰格')
+        self.assertEqual(len(d['standalone_variants']), 1)
+        self.assertEqual(d['standalone_variants'][0]['target_proposal'], '泰格')
+        self.assertEqual(d['standalone_variants'][0]['category'], 'person')
         self.assertEqual(set(d['options']),
-                         {'yes_alias', 'promote_to_separate_entity', 'skip'})
+                         {'yes_alias', 'use_standalone_0', 'skip'})
 
     def test_collision_yes_alias_attaches_alias_only(self):
         existing = make_term('Tai', '太一', 'person')
@@ -941,7 +943,7 @@ class AliasOrNewEntityCollisionTests(unittest.TestCase):
         self.assertIn('Taig', tai['aliases'])
         self.assertNotIn('Taig', [t['source'] for t in g['terms']])
 
-    def test_collision_promote_creates_standalone_only(self):
+    def test_collision_use_standalone_creates_standalone_only(self):
         existing = make_term('Tai', '太一', 'person')
         m = empty_meta(
             new_entities=[{
@@ -959,7 +961,7 @@ class AliasOrNewEntityCollisionTests(unittest.TestCase):
             d = out['decisions_needed'][0]
             run_apply_merge(tmp, {
                 'auto_apply': out['auto_apply'],
-                'decisions': [{**d, 'choice': 'promote_to_separate_entity'}],
+                'decisions': [{**d, 'choice': 'use_standalone_0'}],
                 'consumed_chunk_ids': out['consumed_chunk_ids'],
             })
             g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
@@ -995,6 +997,154 @@ class AliasOrNewEntityCollisionTests(unittest.TestCase):
         self.assertEqual(tai['aliases'], [])
         self.assertEqual([t['source'] for t in g['terms']], ['Tai'])
         self.assertIn('chunk0001', g['applied_meta_hashes'])
+
+    def test_collision_exposes_all_competing_standalone_variants(self):
+        # Bug fix: prior version collapsed multi-variant proposals to first one,
+        # so promote_to_separate_entity hard-coded the wrong target. Now every
+        # competing (target, category) is its own use_standalone_N choice.
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(
+            new_entities=[{
+                'source': 'Taig', 'target_proposal': '泰格', 'category': 'person',
+                'evidence': 'Taig (person).',
+            }],
+            alias_hypotheses=[{
+                'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+            }],
+        )
+        m2 = empty_meta(new_entities=[{
+            'source': 'Taig', 'target_proposal': '太格', 'category': 'place',
+            'evidence': 'Taig (place).',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        self.assertEqual(out['auto_apply'], [])
+        self.assertEqual(len(out['decisions_needed']), 1)
+        d = out['decisions_needed'][0]
+        self.assertEqual(d['kind'], 'alias_or_new_entity')
+        self.assertEqual(len(d['standalone_variants']), 2)
+        targets = {v['target_proposal'] for v in d['standalone_variants']}
+        self.assertEqual(targets, {'泰格', '太格'})
+        self.assertEqual(set(d['options']),
+                         {'yes_alias', 'use_standalone_0', 'use_standalone_1', 'skip'})
+
+    def test_collision_use_standalone_picks_correct_variant(self):
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(
+            new_entities=[{
+                'source': 'Taig', 'target_proposal': '泰格', 'category': 'person',
+                'evidence': 'a.',
+            }],
+            alias_hypotheses=[{
+                'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+            }],
+        )
+        m2 = empty_meta(new_entities=[{
+            'source': 'Taig', 'target_proposal': '太格', 'category': 'place',
+            'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            # Find which index corresponds to the "place" variant
+            place_idx = next(
+                i for i, v in enumerate(d['standalone_variants'])
+                if v['category'] == 'place'
+            )
+            run_apply_merge(tmp, {
+                'auto_apply': out['auto_apply'],
+                'decisions': [{**d, 'choice': f'use_standalone_{place_idx}'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        taig = next(t for t in g['terms'] if t['source'] == 'Taig')
+        self.assertEqual(taig['target'], '太格')
+        self.assertEqual(taig['category'], 'place')
+        # evidence_refs combines BOTH chunks (each variant attests Taig exists)
+        self.assertEqual(sorted(taig['evidence_refs']), ['chunk0001', 'chunk0002'])
+
+
+class AliasCandidateInPendingTests(unittest.TestCase):
+    """Bug fix: alias hypotheses whose candidate is being auto-added in this
+    same prepare-merge run must still produce an alias decision. Otherwise
+    the meta gets hashed as consumed and the alias signal is lost."""
+
+    def test_alias_candidate_pending_in_auto_apply_still_produces_decision(self):
+        # chunk0001: new_entity Tai. chunk0002: alias_hyp Taig→Tai.
+        # Tai isn't in glossary yet — without the fix, alias hyp is dropped.
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+            'evidence': 'Tai walked.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai',
+            'evidence': 'Taig might be Tai.',
+        }])
+        with temp_workspace(glossary=make_glossary(),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        # Tai is auto_apply, AND we should see the alias decision.
+        self.assertEqual(len(out['auto_apply']), 1)
+        self.assertEqual(out['auto_apply'][0]['entity']['source'], 'Tai')
+        self.assertEqual(len(out['decisions_needed']), 1)
+        d = out['decisions_needed'][0]
+        self.assertEqual(d['kind'], 'alias')
+        self.assertEqual(d['variant'], 'Taig')
+        self.assertEqual(d['candidate_source'], 'Tai')
+
+    def test_alias_to_pending_candidate_yes_alias_succeeds_end_to_end(self):
+        # Demonstrates the actual fix: apply-merge processes auto_apply (Phase 2)
+        # before decisions (Phase 3), so by the time the alias decision runs,
+        # Tai is already in the glossary.
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+            'evidence': 'Tai walked.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+        }])
+        with temp_workspace(glossary=make_glossary(),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            run_apply_merge(tmp, {
+                'auto_apply': out['auto_apply'],
+                'decisions': [{**d, 'choice': 'yes_alias'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertIn('Taig', tai['aliases'])
+
+    def test_alias_to_pending_candidate_in_alias_or_new_entity_collision(self):
+        # Even harder: Taig is BOTH a new_entity proposal AND an alias_hyp
+        # to a candidate (Tai) that's also pending. The collision path must
+        # accept Tai as a valid candidate.
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+            'evidence': 'a.',
+        }])
+        m2 = empty_meta(
+            new_entities=[{
+                'source': 'Taig', 'target_proposal': '泰格', 'category': 'person',
+                'evidence': 'b.',
+            }],
+            alias_hypotheses=[{
+                'variant': 'Taig', 'may_be_alias_of_source': 'Tai',
+                'evidence': 'c.',
+            }],
+        )
+        with temp_workspace(glossary=make_glossary(),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        # Tai stays in auto_apply. Taig becomes an alias_or_new_entity decision.
+        auto_sources = {e['entity']['source'] for e in out['auto_apply']}
+        self.assertIn('Tai', auto_sources)
+        self.assertNotIn('Taig', auto_sources)
+        kinds = [d['kind'] for d in out['decisions_needed']]
+        self.assertIn('alias_or_new_entity', kinds)
 
 
 class StatusTests(unittest.TestCase):
