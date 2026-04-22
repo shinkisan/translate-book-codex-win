@@ -218,61 +218,83 @@ def cmd_prepare_merge(temp_dir):
             })
         return out
 
-    # Detect collisions between same-batch new_entity proposals and alias_hypotheses.
-    # If any meta says new_entities=[{source:Taig}] AND any meta says
-    # alias_hypotheses=[{variant:Taig, may_be_alias_of_source:Tai}], then "Taig" can't
-    # be both a standalone source AND an alias of Tai (surface-form uniqueness
-    # violation). Emit a single combined `alias_or_new_entity` decision that exposes
-    # EVERY competing standalone variant as a separate `use_standalone_N` choice, so
-    # the orchestrator can pick the right standalone target if it rejects the alias.
-    # Remove the variant's source from grouped_new_entities so the loop below doesn't
-    # double-handle it.
-    #
-    # candidate_source is left as the literal string the sub-agent wrote. We do NOT
-    # canonicalize to the candidate's current owner here, because the orchestrator
-    # may promote a current alias into a standalone entity in this same batch — at
-    # apply time, _find_term_by_surface re-resolves against the post-mutation
-    # glossary, so the alias attaches to whichever term actually owns that surface
-    # after all entity-creating decisions have run.
-    consumed_alias_keys = set()  # (chunk_id, variant, candidate) of already-handled hyps
+    # Group alias_hypotheses by variant across all loaded metas. Each variant
+    # may have multiple alias candidates (e.g. chunk0002 says Taig→Tai while
+    # chunk0003 says Taig→Tao); they're all options the orchestrator must
+    # choose between. Multiple chunks proposing the same (variant, candidate)
+    # pair contribute their evidence_chunks to a single candidate entry.
+    grouped_alias_hyps = {}  # variant -> list of (chunk_id, ah)
     for chunk_id, data in loaded.items():
         for ah in data.get('alias_hypotheses', []):
-            variant = ah['variant']
-            if variant not in grouped_new_entities:
-                continue
-            candidate_source = ah['may_be_alias_of_source']
-            candidate_term = _find_term_by_surface(glossary, candidate_source)
-            # Candidate may also be in this batch's pending new_entity proposals
-            # (auto_apply, conflicting_new_entity_proposals, OR another
-            # alias_or_new_entity collision). All of these can become a glossary
-            # source by apply time depending on orchestrator decisions; emit the
-            # alias decision and let apply-merge fail-fast if the candidate ends
-            # up not existing (which aborts the transaction so the orchestrator
-            # can re-attempt).
-            candidate_in_pending = candidate_source in grouped_new_entities
-            if candidate_term is None and not candidate_in_pending:
-                continue  # candidate truly absent
-            if variant in surface_idx:
-                # Variant already exists as a surface in the glossary; the
-                # new_entity_existing_alias / conflict path will handle it.
-                continue
-            # Collision detected. Build standalone_variants from ALL proposals
-            # (preserves cross-chunk competing target/category pairs).
-            proposals = grouped_new_entities.pop(variant)
-            standalone_variants = _standalone_variants_for(proposals)
-            options = ['yes_alias'] + [
-                f'use_standalone_{i}' for i in range(len(standalone_variants))
-            ] + ['skip']
-            decisions_needed.append({
-                'id': _new_decision_id(),
-                'kind': 'alias_or_new_entity',
-                'variant': variant,
-                'candidate_source': candidate_source,
-                'alias_evidence': ah['evidence'],
-                'standalone_variants': standalone_variants,
-                'options': options,
+            grouped_alias_hyps.setdefault(ah['variant'], []).append((chunk_id, ah))
+
+    def _alias_candidates_for(hyps):
+        """Aggregate (chunk_id, ah) tuples into per-candidate entries with
+        combined evidence_chunks. Preserves the sub-agent's literal candidate
+        string — apply-merge re-resolves at dispatch time."""
+        by_candidate = {}
+        for chunk_id, ah in hyps:
+            by_candidate.setdefault(ah['may_be_alias_of_source'], []).append((chunk_id, ah))
+        out = []
+        for candidate, items in by_candidate.items():
+            out.append({
+                'candidate_source': candidate,
+                'evidence': items[0][1]['evidence'],
+                'evidence_chunks': sorted({cid for cid, _ in items}),
             })
-            consumed_alias_keys.add((chunk_id, variant, candidate_source))
+        return out
+
+    # Pass 1: variants that collide with same-batch standalone proposals.
+    # Emit alias_or_new_entity exposing EVERY alias candidate AND every
+    # standalone variant. Pop the variant from grouped_new_entities so it
+    # doesn't also get auto_apply'd / decisioned below.
+    consumed_alias_variants = set()  # variants already wrapped into a unified decision
+    for variant in list(grouped_alias_hyps.keys()):
+        if variant not in grouped_new_entities:
+            continue
+        if variant in surface_idx:
+            # Variant is already a glossary surface; the
+            # new_entity_existing_alias / conflict path owns it.
+            continue
+        alias_candidates = _alias_candidates_for(grouped_alias_hyps[variant])
+        proposals = grouped_new_entities.pop(variant)
+        standalone_variants = _standalone_variants_for(proposals)
+        options = (
+            [f'use_alias_{i}' for i in range(len(alias_candidates))]
+            + [f'use_standalone_{i}' for i in range(len(standalone_variants))]
+            + ['skip']
+        )
+        decisions_needed.append({
+            'id': _new_decision_id(),
+            'kind': 'alias_or_new_entity',
+            'variant': variant,
+            'alias_candidates': alias_candidates,
+            'standalone_variants': standalone_variants,
+            'options': options,
+        })
+        consumed_alias_variants.add(variant)
+
+    # Pass 2: variants with 2+ alias candidates but NO standalone collision.
+    # Without a unified decision the orchestrator could naively accept multiple
+    # `yes_alias` decisions for the same variant — surface uniqueness violation.
+    for variant in list(grouped_alias_hyps.keys()):
+        if variant in consumed_alias_variants:
+            continue
+        if variant in surface_idx:
+            continue
+        alias_candidates = _alias_candidates_for(grouped_alias_hyps[variant])
+        if len(alias_candidates) < 2:
+            continue
+        options = [f'use_alias_{i}' for i in range(len(alias_candidates))] + ['skip']
+        decisions_needed.append({
+            'id': _new_decision_id(),
+            'kind': 'alias_or_new_entity',
+            'variant': variant,
+            'alias_candidates': alias_candidates,
+            'standalone_variants': [],
+            'options': options,
+        })
+        consumed_alias_variants.add(variant)
 
     for src, proposals in grouped_new_entities.items():
         target_cat_pairs = {(p['target_proposal'], p['category']) for p in proposals}
@@ -349,10 +371,10 @@ def cmd_prepare_merge(temp_dir):
         elif d['kind'] == 'alias_or_new_entity':
             potential_standalone_sources.add(d['variant'])
 
-    # Alias hypotheses: emit a decision if the candidate is — or could become —
-    # any glossary surface (source OR alias). Variant must NOT also be a
-    # potential standalone source; those collisions are owned by
-    # alias_or_new_entity / new_entity_existing_alias.
+    # Pass 3: simple alias hypotheses (single candidate, no standalone collision).
+    # Emit a decision if the candidate is — or could become — any glossary
+    # surface. Variant must NOT also be a potential standalone source; those
+    # collisions are owned by alias_or_new_entity / new_entity_existing_alias.
     #
     # Alias chains are handled by iterating until fixed point: a hypothesis
     # `Taighi → Taig` is moot when first inspected if Taig isn't anywhere yet,
@@ -364,13 +386,17 @@ def cmd_prepare_merge(temp_dir):
     # dispatch time, after all entity-creating decisions have run AND after
     # earlier alias attachments have made new surfaces resolvable.
     pending_alias_hyps = []
-    for chunk_id, data in loaded.items():
-        for ah in data.get('alias_hypotheses', []):
-            variant = ah['variant']
-            candidate_source = ah['may_be_alias_of_source']
-            if (chunk_id, variant, candidate_source) in consumed_alias_keys:
-                continue  # already wrapped into an alias_or_new_entity decision
-            pending_alias_hyps.append((chunk_id, ah))
+    for variant, hyps in grouped_alias_hyps.items():
+        if variant in consumed_alias_variants:
+            continue  # owned by alias_or_new_entity above
+        # By construction (pass 2), any variant reaching here has exactly one
+        # distinct alias candidate. Multiple chunks proposing the same
+        # (variant, candidate) collapse to a single decision; we keep the
+        # first hypothesis as the representative (its evidence quote shows
+        # in the prompt; the other chunks' hashes are still recorded via
+        # consumed_chunk_ids when the decision is applied).
+        first_chunk_id, first_ah = hyps[0]
+        pending_alias_hyps.append((first_chunk_id, first_ah))
 
     # potential_surfaces = anything that might be a resolvable surface at apply
     # time. Starts with current glossary surfaces + every potential standalone
@@ -517,9 +543,11 @@ def cmd_apply_merge(temp_dir):
                 )
             continue
         if kind == 'alias_or_new_entity':
+            alias_candidates = d.get('alias_candidates') or []
             standalone_variants = d.get('standalone_variants') or []
             valid = (
-                {'yes_alias', 'skip'}
+                {'skip'}
+                | {f'use_alias_{i}' for i in range(len(alias_candidates))}
                 | {f'use_standalone_{i}' for i in range(len(standalone_variants))}
             )
             if choice not in valid:
@@ -649,7 +677,7 @@ def cmd_apply_merge(temp_dir):
         if kind == 'alias':
             return choice == 'yes_alias'
         if kind == 'alias_or_new_entity':
-            return choice == 'yes_alias'
+            return choice.startswith('use_alias_')
         return False
 
     def _dispatch(d):
@@ -732,9 +760,14 @@ def cmd_apply_merge(temp_dir):
 
         if kind == 'alias_or_new_entity':
             variant = d.get('variant')
-            candidate_source = d.get('candidate_source')
+            alias_candidates = d.get('alias_candidates') or []
             standalone_variants = d.get('standalone_variants') or []
-            if choice == 'yes_alias':
+            if choice == 'skip':
+                return True, None
+            m_alias = re.match(r'^use_alias_(\d+)$', choice)
+            if m_alias:
+                idx = int(m_alias.group(1))
+                candidate_source = alias_candidates[idx]['candidate_source']
                 term = _find_term_by_surface(glossary, candidate_source)
                 if term is None:
                     return False, (
@@ -743,28 +776,26 @@ def cmd_apply_merge(temp_dir):
                     )
                 if variant not in term.get('aliases', []):
                     term.setdefault('aliases', []).append(variant)
-            elif choice == 'skip':
-                pass
-            else:
-                # use_standalone_N
-                m = re.match(r'^use_standalone_(\d+)$', choice)
-                idx = int(m.group(1))
-                chosen = standalone_variants[idx]
-                combined_chunks = sorted({
-                    cid for v in standalone_variants for cid in v.get('evidence_chunks', [])
-                })[:EVIDENCE_REFS_CAP]
-                glossary['terms'].append({
-                    'id': variant,
-                    'source': variant,
-                    'target': chosen['target_proposal'],
-                    'category': chosen.get('category', ''),
-                    'aliases': [],
-                    'gender': 'unknown',
-                    'confidence': _confidence_for_evidence_count(len(combined_chunks)),
-                    'frequency': 0,
-                    'evidence_refs': combined_chunks,
-                    'notes': '',
-                })
+                return True, None
+            # use_standalone_N
+            m = re.match(r'^use_standalone_(\d+)$', choice)
+            idx = int(m.group(1))
+            chosen = standalone_variants[idx]
+            combined_chunks = sorted({
+                cid for v in standalone_variants for cid in v.get('evidence_chunks', [])
+            })[:EVIDENCE_REFS_CAP]
+            glossary['terms'].append({
+                'id': variant,
+                'source': variant,
+                'target': chosen['target_proposal'],
+                'category': chosen.get('category', ''),
+                'aliases': [],
+                'gender': 'unknown',
+                'confidence': _confidence_for_evidence_count(len(combined_chunks)),
+                'frequency': 0,
+                'evidence_refs': combined_chunks,
+                'notes': '',
+            })
             return True, None
 
         if kind == 'conflicting_new_entity_proposals':

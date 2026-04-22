@@ -909,12 +909,13 @@ class AliasOrNewEntityCollisionTests(unittest.TestCase):
         d = out['decisions_needed'][0]
         self.assertEqual(d['kind'], 'alias_or_new_entity')
         self.assertEqual(d['variant'], 'Taig')
-        self.assertEqual(d['candidate_source'], 'Tai')
+        self.assertEqual(len(d['alias_candidates']), 1)
+        self.assertEqual(d['alias_candidates'][0]['candidate_source'], 'Tai')
         self.assertEqual(len(d['standalone_variants']), 1)
         self.assertEqual(d['standalone_variants'][0]['target_proposal'], '泰格')
         self.assertEqual(d['standalone_variants'][0]['category'], 'person')
         self.assertEqual(set(d['options']),
-                         {'yes_alias', 'use_standalone_0', 'skip'})
+                         {'use_alias_0', 'use_standalone_0', 'skip'})
 
     def test_collision_yes_alias_attaches_alias_only(self):
         existing = make_term('Tai', '太一', 'person')
@@ -934,7 +935,7 @@ class AliasOrNewEntityCollisionTests(unittest.TestCase):
             d = out['decisions_needed'][0]
             run_apply_merge(tmp, {
                 'auto_apply': out['auto_apply'],
-                'decisions': [{**d, 'choice': 'yes_alias'}],
+                'decisions': [{**d, 'choice': 'use_alias_0'}],
                 'consumed_chunk_ids': out['consumed_chunk_ids'],
             })
             g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
@@ -1027,7 +1028,7 @@ class AliasOrNewEntityCollisionTests(unittest.TestCase):
         targets = {v['target_proposal'] for v in d['standalone_variants']}
         self.assertEqual(targets, {'泰格', '太格'})
         self.assertEqual(set(d['options']),
-                         {'yes_alias', 'use_standalone_0', 'use_standalone_1', 'skip'})
+                         {'use_alias_0', 'use_standalone_0', 'use_standalone_1', 'skip'})
 
     def test_collision_use_standalone_picks_correct_variant(self):
         existing = make_term('Tai', '太一', 'person')
@@ -1369,6 +1370,154 @@ class DispatchOrderIndependenceTests(unittest.TestCase):
             g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
         tai = next(t for t in g['terms'] if t['source'] == 'Tai')
         self.assertIn('Taig', tai['aliases'])
+
+
+class MultiAliasCandidateTests(unittest.TestCase):
+    """Bug fix: when multiple alias_hypotheses for the same variant point at
+    different candidates, prepare-merge must expose ALL candidates as options
+    in a single decision. Otherwise the orchestrator can't compare them and
+    the chunks holding the dropped candidates get hashed-as-applied → signal
+    lost permanently."""
+
+    def test_multi_alias_candidates_with_standalone_collision(self):
+        # The user's exact reproducer: glossary has Tai and Tao;
+        # chunk0001 proposes Taig as new_entity;
+        # chunk0002 proposes Taig → Tai;
+        # chunk0003 proposes Taig → Tao.
+        # Expected: ONE decision exposing both alias candidates AND the
+        # standalone variant. consumed_chunk_ids covers all three chunks.
+        g = make_glossary(
+            make_term('Tai', '太一', 'person'),
+            make_term('Tao', '陶', 'person'),
+        )
+        m1 = empty_meta(new_entities=[{
+            'source': 'Taig', 'target_proposal': '泰格', 'category': 'person',
+            'evidence': 'Taig walks alone.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai',
+            'evidence': 'Taig nodded at Tai.',
+        }])
+        m3 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tao',
+            'evidence': 'Taig followed Tao.',
+        }])
+        with temp_workspace(glossary=g,
+                            metas={'chunk0001': m1, 'chunk0002': m2, 'chunk0003': m3}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        self.assertEqual(out['auto_apply'], [])
+        self.assertEqual(len(out['decisions_needed']), 1)
+        d = out['decisions_needed'][0]
+        self.assertEqual(d['kind'], 'alias_or_new_entity')
+        self.assertEqual(d['variant'], 'Taig')
+        candidate_sources = {c['candidate_source'] for c in d['alias_candidates']}
+        self.assertEqual(candidate_sources, {'Tai', 'Tao'})
+        self.assertEqual(len(d['standalone_variants']), 1)
+        self.assertEqual(set(d['options']),
+                         {'use_alias_0', 'use_alias_1', 'use_standalone_0', 'skip'})
+        self.assertEqual(set(out['consumed_chunk_ids']),
+                         {'chunk0001', 'chunk0002', 'chunk0003'})
+
+    def test_multi_alias_candidates_no_standalone(self):
+        # Same as above but no new_entity proposal — still one unified
+        # decision with two alias candidates.
+        g = make_glossary(
+            make_term('Tai', '太一', 'person'),
+            make_term('Tao', '陶', 'person'),
+        )
+        m1 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tao', 'evidence': '...',
+        }])
+        with temp_workspace(glossary=g, metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        self.assertEqual(len(out['decisions_needed']), 1)
+        d = out['decisions_needed'][0]
+        self.assertEqual(d['kind'], 'alias_or_new_entity')
+        self.assertEqual(len(d['alias_candidates']), 2)
+        self.assertEqual(d['standalone_variants'], [])
+        self.assertEqual(set(d['options']),
+                         {'use_alias_0', 'use_alias_1', 'skip'})
+        self.assertEqual(set(out['consumed_chunk_ids']),
+                         {'chunk0001', 'chunk0002'})
+
+    def test_multi_alias_apply_picks_correct_candidate(self):
+        g = make_glossary(
+            make_term('Tai', '太一', 'person'),
+            make_term('Tao', '陶', 'person'),
+        )
+        m1 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tao', 'evidence': '...',
+        }])
+        with temp_workspace(glossary=g, metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            tao_idx = next(i for i, c in enumerate(d['alias_candidates'])
+                           if c['candidate_source'] == 'Tao')
+            run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': f'use_alias_{tao_idx}'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g_after = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tao = next(t for t in g_after['terms'] if t['source'] == 'Tao')
+        self.assertIn('Taig', tao['aliases'])
+        tai = next(t for t in g_after['terms'] if t['source'] == 'Tai')
+        self.assertNotIn('Taig', tai['aliases'])
+
+    def test_same_candidate_proposed_by_multiple_chunks_dedupes(self):
+        # Two chunks both say Taig→Tai. Should produce ONE alias candidate
+        # with combined evidence_chunks, not two duplicate candidates.
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'a.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        # Single candidate → simple `alias` decision, no need for the unified
+        # multi-candidate kind.
+        alias_decisions = [d for d in out['decisions_needed'] if d['kind'] == 'alias']
+        self.assertEqual(len(alias_decisions), 1)
+        self.assertEqual(alias_decisions[0]['variant'], 'Taig')
+        self.assertEqual(alias_decisions[0]['candidate_source'], 'Tai')
+
+    def test_multi_alias_decision_apply_skip_marks_all_chunks_consumed(self):
+        # If orchestrator picks skip on the multi-candidate decision, all
+        # contributing chunks must still be hashed as applied — otherwise
+        # the same decision re-surfaces forever.
+        g = make_glossary(
+            make_term('Tai', '太一', 'person'),
+            make_term('Tao', '陶', 'person'),
+        )
+        m1 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tao', 'evidence': '...',
+        }])
+        with temp_workspace(glossary=g, metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': 'skip'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g_after = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+            self.assertIn('chunk0001', g_after['applied_meta_hashes'])
+            self.assertIn('chunk0002', g_after['applied_meta_hashes'])
+            # Re-run prepare: nothing surfaces.
+            out2, _ = run_prepare_merge(tmp)
+            self.assertEqual(out2['decisions_needed'], [])
 
 
 class AliasChainTests(unittest.TestCase):
