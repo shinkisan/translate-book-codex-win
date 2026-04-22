@@ -227,6 +227,13 @@ def cmd_prepare_merge(temp_dir):
     # the orchestrator can pick the right standalone target if it rejects the alias.
     # Remove the variant's source from grouped_new_entities so the loop below doesn't
     # double-handle it.
+    #
+    # candidate_source is left as the literal string the sub-agent wrote. We do NOT
+    # canonicalize to the candidate's current owner here, because the orchestrator
+    # may promote a current alias into a standalone entity in this same batch — at
+    # apply time, _find_term_by_surface re-resolves against the post-mutation
+    # glossary, so the alias attaches to whichever term actually owns that surface
+    # after all entity-creating decisions have run.
     consumed_alias_keys = set()  # (chunk_id, variant, candidate) of already-handled hyps
     for chunk_id, data in loaded.items():
         for ah in data.get('alias_hypotheses', []):
@@ -235,10 +242,13 @@ def cmd_prepare_merge(temp_dir):
                 continue
             candidate_source = ah['may_be_alias_of_source']
             candidate_term = _find_term_by_surface(glossary, candidate_source)
-            # The candidate may also be in this batch's pending auto_apply (a NEW
-            # entity proposed in another chunk). That's still a valid alias target
-            # because apply-merge processes auto_apply (Phase 2) before decisions
-            # (Phase 3) — the alias decision will see the canonical source.
+            # Candidate may also be in this batch's pending new_entity proposals
+            # (auto_apply, conflicting_new_entity_proposals, OR another
+            # alias_or_new_entity collision). All of these can become a glossary
+            # source by apply time depending on orchestrator decisions; emit the
+            # alias decision and let apply-merge fail-fast if the candidate ends
+            # up not existing (which aborts the transaction so the orchestrator
+            # can re-attempt).
             candidate_in_pending = candidate_source in grouped_new_entities
             if candidate_term is None and not candidate_in_pending:
                 continue  # candidate truly absent
@@ -250,7 +260,6 @@ def cmd_prepare_merge(temp_dir):
             # (preserves cross-chunk competing target/category pairs).
             proposals = grouped_new_entities.pop(variant)
             standalone_variants = _standalone_variants_for(proposals)
-            canonical_candidate = candidate_term['source'] if candidate_term else candidate_source
             options = ['yes_alias'] + [
                 f'use_standalone_{i}' for i in range(len(standalone_variants))
             ] + ['skip']
@@ -258,7 +267,7 @@ def cmd_prepare_merge(temp_dir):
                 'id': _new_decision_id(),
                 'kind': 'alias_or_new_entity',
                 'variant': variant,
-                'candidate_source': canonical_candidate,
+                'candidate_source': candidate_source,
                 'alias_evidence': ah['evidence'],
                 'standalone_variants': standalone_variants,
                 'options': options,
@@ -325,35 +334,44 @@ def cmd_prepare_merge(temp_dir):
                 'options': options,
             })
 
-    # After the collision pass + auto_apply build, compute the set of sources
-    # that WILL be in the glossary by the time apply-merge processes decisions.
-    # auto_apply runs in apply-merge Phase 2, before the decisions phase, so any
-    # candidate that's about to be auto-added is a valid alias target this round.
-    auto_apply_sources = {entry['entity']['source'] for entry in auto_apply}
+    # Compute the set of every surface that's already a glossary source OR
+    # could become a standalone source via this batch's auto_apply / decisions.
+    # Used to filter alias hypotheses — if the candidate has zero chance of
+    # ending up as a glossary source, the hypothesis is moot.
+    potential_standalone_sources = set(surface_idx.keys())  # everything currently in glossary
+    for entry in auto_apply:
+        potential_standalone_sources.add(entry['entity']['source'])
+    for d in decisions_needed:
+        if d['kind'] == 'conflicting_new_entity_proposals':
+            potential_standalone_sources.add(d['source'])
+        elif d['kind'] == 'new_entity_existing_alias':
+            potential_standalone_sources.add(d['proposed_source'])
+        elif d['kind'] == 'alias_or_new_entity':
+            potential_standalone_sources.add(d['variant'])
 
-    # Alias hypotheses: if variant matches an existing entity (by surface) OR
-    # the candidate is in auto_apply (about to be added this batch), flag.
+    # Alias hypotheses: emit a decision if the candidate is in (or could become)
+    # a glossary source. Variant must NOT also be a potential standalone source
+    # — those collisions are owned by alias_or_new_entity / new_entity_existing_alias.
+    #
+    # candidate_source is preserved verbatim — apply-merge re-resolves at
+    # dispatch time after all entity-creating decisions have run.
     for chunk_id, data in loaded.items():
         for ah in data.get('alias_hypotheses', []):
             variant = ah['variant']
             candidate_source = ah['may_be_alias_of_source']
             if (chunk_id, variant, candidate_source) in consumed_alias_keys:
                 continue  # already wrapped into an alias_or_new_entity decision
-            candidate_term = _find_term_by_surface(glossary, candidate_source)
-            candidate_in_auto_apply = candidate_source in auto_apply_sources
-            if candidate_term is None and not candidate_in_auto_apply:
-                continue  # candidate truly absent; alias hypothesis is moot
-            if variant in surface_idx or variant in auto_apply_sources:
-                # Variant already exists or is about to exist as a standalone source;
-                # the new_entity_existing_alias / conflict / alias_or_new_entity
-                # path handles those collisions.
+            if candidate_source not in potential_standalone_sources:
+                continue  # candidate has no path to glossary; hypothesis is moot
+            if variant in potential_standalone_sources:
+                # Variant is or could become a standalone source via another
+                # decision; that path owns the alias-vs-standalone choice.
                 continue
-            canonical_candidate = candidate_term['source'] if candidate_term else candidate_source
             decisions_needed.append({
                 'id': _new_decision_id(),
                 'kind': 'alias',
                 'variant': variant,
-                'candidate_source': canonical_candidate,
+                'candidate_source': candidate_source,
                 'evidence': ah['evidence'],
                 'options': ['yes_alias', 'no_separate_entity', 'skip'],
             })
@@ -572,11 +590,41 @@ def cmd_apply_merge(temp_dir):
         glossary['terms'].append(new_term)
         auto_applied += 1
 
-    # Phase 3: process decisions. All choices have been pre-validated above;
-    # any error here is a referential failure (entity not in glossary, etc.)
-    # and aborts the whole transaction so the orchestrator can re-attempt
-    # with a corrected payload.
-    for d in decisions:
+    # Phase 3: process decisions. All choices have been pre-validated above.
+    #
+    # Decisions are dispatched in two sub-passes regardless of input order:
+    #   Pass A — entity-creating decisions
+    #            (new_entity_existing_alias.promote_to_separate_entity,
+    #             alias_or_new_entity.use_standalone_N,
+    #             conflicting_new_entity_proposals.use_variant_N)
+    #   Pass B — alias-attaching and conflict-resolving decisions
+    #            (alias.yes_alias, alias_or_new_entity.yes_alias, conflict.*)
+    #
+    # This makes the orchestrator's job order-independent: yes_alias decisions
+    # whose candidate is created by a same-batch decision will succeed because
+    # Pass A has already added the candidate to the glossary by the time Pass B
+    # looks it up. Within each pass, input order is preserved for determinism.
+    #
+    # Any referential failure during dispatch (entity not in glossary, etc.) is
+    # collected into `errors`; if non-empty after both passes, the entire
+    # transaction aborts so the orchestrator can re-attempt with a corrected
+    # payload.
+
+    def _is_creator(d):
+        kind = d['kind']
+        choice = d['choice']
+        if kind == 'new_entity_existing_alias':
+            return choice == 'promote_to_separate_entity'
+        if kind == 'alias_or_new_entity':
+            return choice.startswith('use_standalone_')
+        if kind == 'conflicting_new_entity_proposals':
+            return choice.startswith('use_variant_')
+        return False
+
+    creator_decisions = [d for d in decisions if _is_creator(d)]
+    follower_decisions = [d for d in decisions if not _is_creator(d)]
+
+    for d in creator_decisions + follower_decisions:
         d_id = d.get('id')
         kind = d['kind']
         choice = d['choice']

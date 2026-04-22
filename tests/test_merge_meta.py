@@ -1147,6 +1147,230 @@ class AliasCandidateInPendingTests(unittest.TestCase):
         self.assertIn('alias_or_new_entity', kinds)
 
 
+class CandidateInConflictingProposalsTests(unittest.TestCase):
+    """Bug fix: alias hypothesis whose candidate is in this batch's
+    conflicting_new_entity_proposals must still produce a decision —
+    otherwise the meta gets hashed as consumed and the alias signal is lost."""
+
+    def test_candidate_in_conflicting_new_entity_proposals_emits_alias_decision(self):
+        # chunk0001/0002: competing proposals for Tai (target conflict).
+        # chunk0003: Taig may be alias of Tai. The alias must be surfaced even
+        # though Tai isn't in glossary AND isn't auto_apply (it's pending in
+        # conflicting_new_entity_proposals).
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+            'evidence': 'a.',
+        }])
+        m2 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '泰', 'category': 'person',
+            'evidence': 'b.',
+        }])
+        m3 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'c.',
+        }])
+        with temp_workspace(glossary=make_glossary(),
+                            metas={'chunk0001': m1, 'chunk0002': m2, 'chunk0003': m3}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        kinds = sorted(d['kind'] for d in out['decisions_needed'])
+        self.assertIn('alias', kinds)
+        self.assertIn('conflicting_new_entity_proposals', kinds)
+        alias_d = next(d for d in out['decisions_needed'] if d['kind'] == 'alias')
+        self.assertEqual(alias_d['variant'], 'Taig')
+        self.assertEqual(alias_d['candidate_source'], 'Tai')
+
+    def test_candidate_in_conflicting_proposals_resolved_then_alias_attached(self):
+        # End-to-end: orchestrator resolves the conflicting proposals AND
+        # attaches the alias in a single apply-merge call. Order in the
+        # decisions list shouldn't matter — alias dispatch happens after the
+        # use_variant_N creator regardless of input order.
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person', 'evidence': 'a.',
+        }])
+        m2 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '泰', 'category': 'person', 'evidence': 'b.',
+        }])
+        m3 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'c.',
+        }])
+        with temp_workspace(glossary=make_glossary(),
+                            metas={'chunk0001': m1, 'chunk0002': m2, 'chunk0003': m3}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d_alias = next(d for d in out['decisions_needed'] if d['kind'] == 'alias')
+            d_conflict = next(d for d in out['decisions_needed']
+                              if d['kind'] == 'conflicting_new_entity_proposals')
+            # Pass the alias decision FIRST in the input list. Apply-merge
+            # must still run the creator (use_variant_0) before the alias
+            # attacher.
+            run_apply_merge(tmp, {
+                'auto_apply': out['auto_apply'],
+                'decisions': [
+                    {**d_alias, 'choice': 'yes_alias'},
+                    {**d_conflict, 'choice': 'use_variant_0'},
+                ],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertIn('Taig', tai['aliases'])
+
+
+class CandidateNotCanonicalizedTests(unittest.TestCase):
+    """Bug fix: candidate_source in the decision item must be the literal
+    string the sub-agent wrote, NOT the current owner's source. Apply-merge
+    re-resolves at dispatch time so the alias attaches to whichever term
+    actually owns that surface AFTER all entity-creating decisions have run."""
+
+    def test_alias_candidate_keeps_subagent_string_when_currently_an_alias(self):
+        # Glossary has Banana with alias Apple. Sub-agent says Cherry may be
+        # alias of "Apple". The decision should preserve "Apple" verbatim
+        # (not eagerly canonicalize to "Banana"), so that if the orchestrator
+        # promotes Apple to a standalone entity in the same batch, Cherry
+        # attaches to the new Apple — not to Banana.
+        existing = make_term('Banana', '香蕉', aliases=['Apple'])
+        m1 = empty_meta(new_entities=[{
+            'source': 'Apple', 'target_proposal': '苹果', 'category': 'fruit',
+            'evidence': 'Apple is red.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Cherry', 'may_be_alias_of_source': 'Apple',
+            'evidence': 'Cherry like Apple.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            alias_d = next(d for d in out['decisions_needed'] if d['kind'] == 'alias')
+            # Critical: candidate_source preserved as 'Apple', not canonicalized.
+            self.assertEqual(alias_d['candidate_source'], 'Apple')
+
+            promote_d = next(d for d in out['decisions_needed']
+                             if d['kind'] == 'new_entity_existing_alias')
+            run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [
+                    {**alias_d, 'choice': 'yes_alias'},
+                    {**promote_d, 'choice': 'promote_to_separate_entity'},
+                ],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        # Apple is now its own entity; Cherry attaches to the NEW Apple,
+        # not to Banana.
+        apple = next(t for t in g['terms'] if t['source'] == 'Apple')
+        self.assertIn('Cherry', apple['aliases'])
+        banana = next(t for t in g['terms'] if t['source'] == 'Banana')
+        self.assertNotIn('Cherry', banana['aliases'])
+        self.assertNotIn('Apple', banana['aliases'])
+
+
+class DispatchOrderIndependenceTests(unittest.TestCase):
+    """Bug fix: apply-merge dispatches entity-creating decisions before
+    alias-attaching ones, regardless of the order they appear in the input
+    decisions list. The orchestrator should not have to topo-sort."""
+
+    def test_alias_decision_before_creator_in_input_order_succeeds(self):
+        # Glossary empty. chunk0001: new_entity Tai; chunk0002: alias Taig→Tai.
+        # Pass alias FIRST in decisions list — dispatch must reorder.
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+            'evidence': 'Tai walks.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+        }])
+        with temp_workspace(glossary=make_glossary(),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            alias_d = next(d for d in out['decisions_needed'] if d['kind'] == 'alias')
+            # Note: Tai goes via auto_apply (no other competing proposal). So
+            # this test exercises the auto_apply → alias-attacher ordering,
+            # which already worked. The harder case is below.
+            _, _, code = run_apply_merge(tmp, {
+                'auto_apply': out['auto_apply'],
+                'decisions': [{**alias_d, 'choice': 'yes_alias'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            self.assertEqual(code, 0)
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertIn('Taig', tai['aliases'])
+
+    def test_alias_to_promoted_alias_in_arbitrary_input_order_succeeds(self):
+        # Banana has alias Apple. Sub-agent proposes new_entity Apple AND
+        # alias Cherry→Apple. Two decisions: promote Apple, attach Cherry to
+        # promoted Apple. Pass alias FIRST in input — dispatch must reorder
+        # so promote runs first.
+        existing = make_term('Banana', '香蕉', aliases=['Apple'])
+        m1 = empty_meta(new_entities=[{
+            'source': 'Apple', 'target_proposal': '苹果', 'category': 'fruit',
+            'evidence': 'a.',
+        }])
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Cherry', 'may_be_alias_of_source': 'Apple',
+            'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            alias_d = next(d for d in out['decisions_needed'] if d['kind'] == 'alias')
+            promote_d = next(d for d in out['decisions_needed']
+                             if d['kind'] == 'new_entity_existing_alias')
+            # Pass alias FIRST. Without dispatch reordering, this would fail
+            # because Apple isn't yet a glossary source when yes_alias runs.
+            _, err, code = run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [
+                    {**alias_d, 'choice': 'yes_alias'},
+                    {**promote_d, 'choice': 'promote_to_separate_entity'},
+                ],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            self.assertEqual(code, 0, f"expected success, stderr was: {err}")
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        apple = next(t for t in g['terms'] if t['source'] == 'Apple')
+        self.assertIn('Cherry', apple['aliases'])
+
+    def test_alias_to_alias_or_new_entity_creator_in_arbitrary_order(self):
+        # alias_or_new_entity collision: chunk0001 has new_entity Tai +
+        # alias_hyp Tai→OtherCharacter. Glossary has OtherCharacter.
+        # Separately chunk0002: alias_hyp Taig→Tai.
+        # Tai becomes a use_standalone-style decision (alias_or_new_entity).
+        # Taig→Tai becomes an alias decision. Pass them in reverse order;
+        # dispatch reorders so the standalone is created before Taig attaches.
+        existing = make_term('OtherCharacter', '其他', 'person')
+        m1 = empty_meta(
+            new_entities=[{
+                'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+                'evidence': 'a.',
+            }],
+            alias_hypotheses=[{
+                'variant': 'Tai', 'may_be_alias_of_source': 'OtherCharacter',
+                'evidence': 'b.',
+            }],
+        )
+        m2 = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'c.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            alias_d = next(d for d in out['decisions_needed']
+                           if d['kind'] == 'alias' and d['variant'] == 'Taig')
+            collision_d = next(d for d in out['decisions_needed']
+                               if d['kind'] == 'alias_or_new_entity')
+            _, err, code = run_apply_merge(tmp, {
+                'auto_apply': out['auto_apply'],
+                'decisions': [
+                    {**alias_d, 'choice': 'yes_alias'},
+                    {**collision_d, 'choice': 'use_standalone_0'},
+                ],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            self.assertEqual(code, 0, f"expected success, stderr was: {err}")
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertIn('Taig', tai['aliases'])
+
+
 class StatusTests(unittest.TestCase):
     def test_reports_translated_meta_consumed_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
