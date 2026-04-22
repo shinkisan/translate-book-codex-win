@@ -118,18 +118,24 @@ Each chunk is translated by a fresh-context sub-agent, which means the same prop
 1. Sample 5 chunks (first, last, 3 evenly-spaced middle).
 2. Extract proper nouns and recurring domain terms; pick canonical translations.
 3. Write `<temp_dir>/glossary.json` (hand-editable schema below).
-4. Run `python3 scripts/glossary.py count-frequencies <temp_dir>` to populate per-term frequencies (ASCII terms use word-boundary regex so `cat` doesn't match `category`; CJK terms use substring; single-CJK-char terms are rejected).
-5. For each chunk, the orchestrator calls `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md` and injects the resulting 2-column markdown table into that chunk's prompt as a hard constraint. Term selection = (terms appearing in this chunk) ∪ (top-N most-frequent book-wide).
+4. Run `python3 scripts/glossary.py count-frequencies <temp_dir>` to populate per-term frequencies (ASCII terms use word-boundary regex so `cat` doesn't match `category`; CJK terms use substring; single-CJK-char terms are rejected; aliases count toward the term they belong to).
+5. For each chunk, the orchestrator calls `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md` and injects the resulting 3-column (`原文 | 别名 | 译文`) markdown table into that chunk's prompt as a hard constraint. Term selection = (terms whose source OR any alias appears in this chunk) ∪ (top-N most-frequent book-wide).
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "terms": [
-    {"source": "Manhattan", "target": "曼哈顿", "category": "place", "frequency": 12}
+    {"id": "Manhattan", "source": "Manhattan", "target": "曼哈顿",
+     "category": "place", "aliases": [], "gender": "unknown",
+     "confidence": "medium", "frequency": 12,
+     "evidence_refs": [], "notes": ""}
   ],
-  "high_frequency_top_n": 20
+  "high_frequency_top_n": 20,
+  "applied_meta_hashes": {}
 }
 ```
+
+Existing v1 `glossary.json` files are auto-upgraded to v2 on first load. v2 forbids the same surface form (source or alias) appearing in two different terms; if a v1 file has polysemous duplicate sources, the upgrade aborts with a disambiguation message — fix the file by hand and reload.
 
 Edit `glossary.json` between runs to fix translations; existing `glossary.json` is never overwritten — delete it to rebuild from scratch.
 
@@ -184,6 +190,7 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | Changed title/template/assets but output didn't update | Delete existing `output.md`, `book*.html`, `book.docx`, `book.epub`, `book.pdf` from the temp dir, then re-run `merge_and_build.py` |
 | Want page-number footers stripped from PDF output | By default, monotonic page-number sequences (e.g. `1, 2, 3, ...`) are auto-detected and dropped while outliers like years (`1984`), chapter numbers, and citation indices stay preserved. If detection misses your case, pass `--strip-page-numbers` to `convert.py` to aggressively delete every standalone-digit line. The flag aborts if a cached `input.md` or `chunk*.md` already exists — delete them first so the flag actually takes effect. |
 | `output.md exists but manifest invalid` | Stale output — the script auto-deletes and re-merges |
+| `Glossary upgrade rejected: duplicate source` | v2 disallows two terms sharing a source/alias surface form. Edit `glossary.json` to disambiguate (e.g., rename one source from `Apple` to `Apple (Inc.)`) and reload. |
 | PDF generation fails | Ensure Calibre is installed with PDF output support |
 
 ## Roadmap

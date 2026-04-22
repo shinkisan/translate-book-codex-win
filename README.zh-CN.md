@@ -118,18 +118,24 @@ Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 ch
 1. 抽样 5 个 chunk（首章、末章、3 个均匀分布的中间章节）。
 2. 提取专有名词和反复出现的领域术语，给每个术语确定一个标准译法。
 3. 写入 `<temp_dir>/glossary.json`（schema 见下，可手动编辑）。
-4. 运行 `python3 scripts/glossary.py count-frequencies <temp_dir>`，统计每个术语在全书的出现次数（ASCII 术语用单词边界正则，避免 `cat` 误匹配 `category`；中日韩术语用子串匹配；单字汉字术语会被拒绝以防过度匹配）。
-5. 翻译每个 chunk 之前，主 agent 调用 `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md`，将输出的 2 列 markdown 表格作为硬性约束注入到该 chunk 的 prompt。术语选取 = (本 chunk 中出现的术语) ∪ (全书出现频率 top-N 的术语)。
+4. 运行 `python3 scripts/glossary.py count-frequencies <temp_dir>`，统计每个术语在全书的出现次数（ASCII 术语用单词边界正则，避免 `cat` 误匹配 `category`；中日韩术语用子串匹配；单字汉字术语会被拒绝以防过度匹配；别名也计入所属术语的频次）。
+5. 翻译每个 chunk 之前，主 agent 调用 `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md`，将输出的 3 列（`原文 | 别名 | 译文`）markdown 表格作为硬性约束注入到该 chunk 的 prompt。术语选取 = (本 chunk 中出现原文或任一别名的术语) ∪ (全书出现频率 top-N 的术语)。
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "terms": [
-    {"source": "Manhattan", "target": "曼哈顿", "category": "place", "frequency": 12}
+    {"id": "Manhattan", "source": "Manhattan", "target": "曼哈顿",
+     "category": "place", "aliases": [], "gender": "unknown",
+     "confidence": "medium", "frequency": 12,
+     "evidence_refs": [], "notes": ""}
   ],
-  "high_frequency_top_n": 20
+  "high_frequency_top_n": 20,
+  "applied_meta_hashes": {}
 }
 ```
+
+已有的 v1 `glossary.json` 会在首次加载时自动升级为 v2。v2 禁止同一个表面词（原文或别名）同时归属于两个不同术语；如果 v1 文件存在同名（polysemous）的重复 source，升级会终止并给出消歧提示 — 手工修复后重新加载即可。
 
 可在两次运行之间编辑 `glossary.json` 修正译法。已存在的 `glossary.json` 不会被覆盖 — 删除它才会重建。
 
@@ -184,6 +190,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |
 | 想去掉 PDF 输出中的页码 | 默认会自动识别单调递增的页码序列（如 `1, 2, 3, ...`）并删除，同时保留年份（`1984`）、章节编号、引用编号等离散的独立数字行。若识别不到你的页码格式，可给 `convert.py` 加 `--strip-page-numbers`，强制删除所有独立数字行。该标志在检测到已缓存的 `input.md` 或 `chunk*.md` 时会直接报错 — 需先删除这些缓存，标志才会生效 |
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
+| `Glossary upgrade rejected: duplicate source` | v2 不允许两个术语共用同一个 source/alias 表面词。手工编辑 `glossary.json` 消歧（例如把一个 source 从 `Apple` 改为 `Apple (Inc.)`）后重新加载。 |
 | PDF 生成失败 | 确认 Calibre 已安装且支持 PDF 输出 |
 
 ## 后续规划

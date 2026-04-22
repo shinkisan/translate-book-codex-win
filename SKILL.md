@@ -58,17 +58,23 @@ Otherwise:
 
 1. **Sample chunks**: read `chunk0001.md`, the last chunk, and 3 evenly-spaced middle chunks. If `chunk_count < 5`, sample all of them.
 2. **Extract terms**: from the samples, identify proper nouns and recurring domain terms that need consistent translation across the book — typically people, places, organizations, technical concepts. Translate each into the target language. Skip generic vocabulary that any translator would render the same way.
-3. **Write `glossary.json`** in the temp dir, matching this schema:
+3. **Write `glossary.json`** in the temp dir, matching this v2 schema:
 
    ```json
    {
-     "version": 1,
+     "version": 2,
      "terms": [
-       {"source": "Manhattan", "target": "曼哈顿", "category": "place", "frequency": 0}
+       {"id": "Manhattan", "source": "Manhattan", "target": "曼哈顿",
+        "category": "place", "aliases": [], "gender": "unknown",
+        "confidence": "medium", "frequency": 0,
+        "evidence_refs": [], "notes": ""}
      ],
-     "high_frequency_top_n": 20
+     "high_frequency_top_n": 20,
+     "applied_meta_hashes": {}
    }
    ```
+
+   Existing v1 `glossary.json` files are auto-upgraded to v2 on first load. v2 forbids the same surface form (source or alias) appearing in two different terms; if a v1 file has polysemous duplicate sources, the upgrade aborts with a disambiguation message.
 
 4. **Count frequencies** by running:
 
@@ -108,12 +114,42 @@ Each sub-agent receives:
 python3 {baseDir}/scripts/glossary.py print-terms-for-chunk "<temp_dir>" "chunk<NNNN>.md"
 ```
 
-Capture stdout. The CLI emits a 2-column markdown table of every term that either appears in this chunk OR is in the top-N most-frequent terms book-wide. Inject the table as `{TERM_TABLE}` in rule #13 of the translation prompt. **If stdout is empty (no glossary, or no relevant terms), omit rule #13 from this chunk's prompt entirely** — do not leave a dangling `{TERM_TABLE}` placeholder.
+Capture stdout. The CLI emits a 3-column markdown table (`原文 | 别名 | 译文`) of every term that either appears in this chunk (by source OR any alias) OR is in the top-N most-frequent terms book-wide. Inject the table as `{TERM_TABLE}` in rule #13 of the translation prompt. **If stdout is empty (no glossary, or no relevant terms), omit rule #13 from this chunk's prompt entirely** — do not leave a dangling `{TERM_TABLE}` placeholder.
 
 **Each sub-agent's task**:
 1. Read the source chunk file (e.g. `chunk0001.md`)
 2. Translate the content following the translation rules below
 3. Write the translated content to `output_chunk0001.md`
+4. Write observations to `output_chunk0001.meta.json` matching the schema below. **Non-blocking** — leave fields empty if unsure; do not invent entities. Always emit the file (even if all arrays are empty), because its presence + content hash is how the main agent tracks whether feedback was already merged.
+
+**Sub-agent meta schema** (`output_chunk<NNNN>.meta.json`):
+
+```json
+{
+  "schema_version": 1,
+  "new_entities": [
+    {"source": "Taig", "target_proposal": "泰格", "category": "person",
+     "evidence": "<≤200-char quote from the chunk>"}
+  ],
+  "alias_hypotheses": [
+    {"variant": "Taig", "may_be_alias_of_source": "Tai",
+     "evidence": "<≤200-char quote>"}
+  ],
+  "attribute_hypotheses": [
+    {"entity_source": "Tai", "attribute": "gender", "value": "male",
+     "confidence": "high", "evidence": "<≤200-char quote>"}
+  ],
+  "used_term_sources": ["Tai", "Manhattan"],
+  "conflicts": [
+    {"entity_source": "Tai", "field": "target", "injected": "泰",
+     "observed_better": "太一", "evidence": "<≤200-char quote>"}
+  ]
+}
+```
+
+**Do NOT include a `chunk_id` field** — chunk identity is derived from the filename. Putting it in the payload creates a hallucination hole and validation will reject the file.
+
+The meta file is read by the main agent later and merged into `glossary.json` (see `merge_meta.py`). Sub-agents should fill the schema honestly: cite real quotes from the chunk, never invent entities to "look productive". An empty meta is a perfectly valid output.
 
 **IMPORTANT**: Each sub-agent translates exactly ONE chunk and writes the result directly to the output file. No START/END markers needed.
 
@@ -159,7 +195,7 @@ IMPORTANT REQUIREMENTS:
     - 正文段落不要添加标题标记
     - 如果原文已有markdown标题标记，保持其层级结构
 12. {CUSTOM_INSTRUCTIONS if provided}
-13. 术语一致性：以下术语必须严格使用指定译法，不要自行变换。表格中"原文"列出现在正文中时，必须翻译为"译文"列对应的形式。
+13. 术语一致性：以下术语必须严格使用指定译法，不要自行变换。表格中"原文"列**或"别名"列**任一形式出现在正文中时，都必须翻译为"译文"列对应的形式。
 
 {TERM_TABLE}
 
