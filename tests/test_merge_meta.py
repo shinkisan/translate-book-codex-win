@@ -193,8 +193,10 @@ class PrepareMergeBasicTests(unittest.TestCase):
         self.assertEqual(d['kind'], 'new_entity_existing_alias')
         self.assertEqual(d['proposed_source'], 'Apple')
         self.assertEqual(d['currently_alias_of'], 'Banana')
+        self.assertEqual(len(d['promoted_variants']), 1)
+        self.assertEqual(d['promoted_variants'][0]['target_proposal'], '苹果')
         self.assertEqual(set(d['options']),
-                         {'promote_to_separate_entity', 'keep_as_alias', 'skip'})
+                         {'use_variant_0', 'keep_as_alias', 'skip'})
 
     def test_flags_alias_hypothesis_when_candidate_exists(self):
         existing = make_term('Tai', '太一', 'person')
@@ -566,7 +568,7 @@ class ApplyMergeDecisionTests(unittest.TestCase):
             d = out['decisions_needed'][0]
             run_apply_merge(tmp, {
                 'auto_apply': [],
-                'decisions': [{**d, 'choice': 'promote_to_separate_entity'}],
+                'decisions': [{**d, 'choice': 'use_variant_0'}],
                 'consumed_chunk_ids': out['consumed_chunk_ids'],
             })
             g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
@@ -1249,7 +1251,7 @@ class CandidateNotCanonicalizedTests(unittest.TestCase):
                 'auto_apply': [],
                 'decisions': [
                     {**alias_d, 'choice': 'yes_alias'},
-                    {**promote_d, 'choice': 'promote_to_separate_entity'},
+                    {**promote_d, 'choice': 'use_variant_0'},
                 ],
                 'consumed_chunk_ids': out['consumed_chunk_ids'],
             })
@@ -1321,7 +1323,7 @@ class DispatchOrderIndependenceTests(unittest.TestCase):
                 'auto_apply': [],
                 'decisions': [
                     {**alias_d, 'choice': 'yes_alias'},
-                    {**promote_d, 'choice': 'promote_to_separate_entity'},
+                    {**promote_d, 'choice': 'use_variant_0'},
                 ],
                 'consumed_chunk_ids': out['consumed_chunk_ids'],
             })
@@ -1518,6 +1520,196 @@ class MultiAliasCandidateTests(unittest.TestCase):
             # Re-run prepare: nothing surfaces.
             out2, _ = run_prepare_merge(tmp)
             self.assertEqual(out2['decisions_needed'], [])
+
+
+class ExistingEntityConflictTests(unittest.TestCase):
+    """Bug fix: when src is already a glossary source, multi-chunk new_entity
+    proposals must surface every distinct (target, category) variant that
+    differs from canonical — not collapse to proposals[0]."""
+
+    def test_first_proposal_matches_canonical_other_differs_still_surfaces(self):
+        # chunk0001 repeats canonical; chunk0002 proposes a different target.
+        # Old code looked at proposals[0] (matches), did silent no-op, but
+        # consumed both chunks → chunk0002's signal lost.
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+            'evidence': 'matches.',
+        }])
+        m2 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '泰', 'category': 'person',
+            'evidence': 'differs.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        self.assertEqual(len(out['decisions_needed']), 1)
+        d = out['decisions_needed'][0]
+        self.assertEqual(d['kind'], 'existing_entity_conflict')
+        self.assertEqual(d['entity_source'], 'Tai')
+        # Only the differing variant is in proposed_variants.
+        self.assertEqual(len(d['proposed_variants']), 1)
+        self.assertEqual(d['proposed_variants'][0]['target_proposal'], '泰')
+
+    def test_category_only_difference_surfaces(self):
+        # Same target, different category — must surface.
+        existing = make_term('Apple', '苹果', 'fruit')
+        m = empty_meta(new_entities=[{
+            'source': 'Apple', 'target_proposal': '苹果', 'category': 'company',
+            'evidence': 'Apple Inc.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        self.assertEqual(len(out['decisions_needed']), 1)
+        d = out['decisions_needed'][0]
+        self.assertEqual(d['kind'], 'existing_entity_conflict')
+        self.assertEqual(d['proposed_variants'][0]['category'], 'company')
+
+    def test_all_proposals_match_canonical_silent_noop(self):
+        # If every proposal matches canonical, no decision but chunks consumed.
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+            'evidence': 'a.',
+        }])
+        m2 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '太一', 'category': 'person',
+            'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        self.assertEqual(out['decisions_needed'], [])
+        self.assertEqual(set(out['consumed_chunk_ids']), {'chunk0001', 'chunk0002'})
+
+    def test_multi_distinct_variants_all_surfaced(self):
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '泰一', 'category': 'person',
+            'evidence': 'a.',
+        }])
+        m2 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '泰', 'category': 'place',
+            'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            self.assertEqual(d['kind'], 'existing_entity_conflict')
+            self.assertEqual(len(d['proposed_variants']), 2)
+            self.assertEqual(set(d['options']),
+                             {'keep_current', 'use_variant_0', 'use_variant_1', 'record_in_notes'})
+
+    def test_apply_use_variant_updates_target_and_category(self):
+        existing = make_term('Tai', '太一', 'person')
+        m = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '泰', 'category': 'place',
+            'evidence': '...',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': 'use_variant_0'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertEqual(tai['target'], '泰')
+        self.assertEqual(tai['category'], 'place')
+        self.assertIn('updated', tai['notes'])
+
+    def test_apply_record_in_notes_preserves_canonical(self):
+        existing = make_term('Tai', '太一', 'person')
+        m1 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '泰一', 'category': 'person', 'evidence': 'a.',
+        }])
+        m2 = empty_meta(new_entities=[{
+            'source': 'Tai', 'target_proposal': '泰二', 'category': 'person', 'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': 'record_in_notes'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertEqual(tai['target'], '太一')  # canonical preserved
+        # Both observations recorded in notes.
+        self.assertIn('泰一', tai['notes'])
+        self.assertIn('泰二', tai['notes'])
+
+
+class NewEntityExistingAliasMultiVariantTests(unittest.TestCase):
+    """Bug fix: when src is an existing alias of host, multi-chunk promotion
+    proposals must surface every distinct (target, category) variant — not
+    just proposals[0]."""
+
+    def test_multi_variant_promotion_surfaces_all_proposals(self):
+        # Banana has alias Apple. chunk0001 says Apple → 苹果 (fruit);
+        # chunk0002 says Apple → 苹果公司 (company). Both must be exposed.
+        existing = make_term('Banana', '香蕉', aliases=['Apple'])
+        m1 = empty_meta(new_entities=[{
+            'source': 'Apple', 'target_proposal': '苹果', 'category': 'fruit',
+            'evidence': 'Apple is red.',
+        }])
+        m2 = empty_meta(new_entities=[{
+            'source': 'Apple', 'target_proposal': '苹果公司', 'category': 'company',
+            'evidence': 'Apple Inc.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        self.assertEqual(len(out['decisions_needed']), 1)
+        d = out['decisions_needed'][0]
+        self.assertEqual(d['kind'], 'new_entity_existing_alias')
+        self.assertEqual(d['proposed_source'], 'Apple')
+        self.assertEqual(len(d['promoted_variants']), 2)
+        targets = {v['target_proposal'] for v in d['promoted_variants']}
+        self.assertEqual(targets, {'苹果', '苹果公司'})
+        self.assertEqual(set(d['options']),
+                         {'use_variant_0', 'use_variant_1', 'keep_as_alias', 'skip'})
+        self.assertEqual(set(out['consumed_chunk_ids']),
+                         {'chunk0001', 'chunk0002'})
+
+    def test_multi_variant_apply_picks_correct_promoted_form(self):
+        existing = make_term('Banana', '香蕉', aliases=['Apple'])
+        m1 = empty_meta(new_entities=[{
+            'source': 'Apple', 'target_proposal': '苹果', 'category': 'fruit',
+            'evidence': 'a.',
+        }])
+        m2 = empty_meta(new_entities=[{
+            'source': 'Apple', 'target_proposal': '苹果公司', 'category': 'company',
+            'evidence': 'b.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m1, 'chunk0002': m2}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            company_idx = next(
+                i for i, v in enumerate(d['promoted_variants'])
+                if v['category'] == 'company'
+            )
+            run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': f'use_variant_{company_idx}'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        # Banana lost the alias; new Apple created with company target/category.
+        banana = next(t for t in g['terms'] if t['source'] == 'Banana')
+        self.assertEqual(banana['aliases'], [])
+        apple = next(t for t in g['terms'] if t['source'] == 'Apple')
+        self.assertEqual(apple['target'], '苹果公司')
+        self.assertEqual(apple['category'], 'company')
 
 
 class AliasChainTests(unittest.TestCase):

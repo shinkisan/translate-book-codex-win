@@ -44,12 +44,10 @@ EVIDENCE_REFS_CAP = 5
 VALID_CHOICES_BY_KIND = {
     'alias': frozenset({'yes_alias', 'no_separate_entity', 'skip'}),
     'conflict': frozenset({'keep_current', 'accept_proposed', 'record_in_notes'}),
-    'new_entity_existing_alias': frozenset(
-        {'promote_to_separate_entity', 'keep_as_alias', 'skip'}
-    ),
-    # alias_or_new_entity and conflicting_new_entity_proposals have dynamic
-    # use_standalone_N / use_variant_N choices generated from variant counts;
-    # validated at apply time against the decision item's options array.
+    # alias_or_new_entity, conflicting_new_entity_proposals,
+    # new_entity_existing_alias, and existing_entity_conflict have dynamic
+    # use_*_N choices generated from variant counts; validated at apply time
+    # against the decision item's options array.
 }
 
 VALID_GENDER_VALUES = ('male', 'female', 'nonbinary', 'unknown')
@@ -302,33 +300,51 @@ def cmd_prepare_merge(temp_dir):
             owner_id, owner_role = surface_idx[src]
             owner_term = _find_term_by_id(glossary, owner_id)
             if owner_role == 'source':
-                # Source already exists as someone's source → flag as conflict.
-                # Take the first proposal (sub-agent voted on a translation that
-                # disagrees with what's already canonical).
-                p = proposals[0]
-                if p['target_proposal'] != owner_term['target']:
+                # src is already canonical. For each distinct (target, category)
+                # proposal across the batch that DIFFERS from the canonical
+                # (target, category), expose it as a competing variant. If
+                # every proposal matches canonical, silent no-op.
+                canonical_pair = (
+                    owner_term['target'],
+                    owner_term.get('category', ''),
+                )
+                proposed_variants = _standalone_variants_for(proposals)
+                differing = [
+                    v for v in proposed_variants
+                    if (v['target_proposal'], v['category']) != canonical_pair
+                ]
+                if differing:
+                    options = (
+                        ['keep_current']
+                        + [f'use_variant_{i}' for i in range(len(differing))]
+                        + ['record_in_notes']
+                    )
                     decisions_needed.append({
                         'id': _new_decision_id(),
-                        'kind': 'conflict',
+                        'kind': 'existing_entity_conflict',
                         'entity_source': src,
-                        'field': 'target',
-                        'current': owner_term['target'],
-                        'proposed': p['target_proposal'],
-                        'evidence': p['evidence'],
-                        'options': ['keep_current', 'accept_proposed', 'record_in_notes'],
+                        'current_target': owner_term['target'],
+                        'current_category': owner_term.get('category', ''),
+                        'proposed_variants': differing,
+                        'options': options,
                     })
-                # else: identical target — nothing to do.
+                # else: every proposal matched canonical — no decision needed.
             else:  # role == 'alias'
-                p = proposals[0]
+                # src is currently another term's alias; sub-agents propose to
+                # promote it. Expose every distinct (target, category) variant
+                # so the orchestrator can pick the right promoted form.
+                promoted_variants = _standalone_variants_for(proposals)
+                options = (
+                    [f'use_variant_{i}' for i in range(len(promoted_variants))]
+                    + ['keep_as_alias', 'skip']
+                )
                 decisions_needed.append({
                     'id': _new_decision_id(),
                     'kind': 'new_entity_existing_alias',
                     'proposed_source': src,
                     'currently_alias_of': owner_id,
-                    'proposed_target': p['target_proposal'],
-                    'proposed_category': p['category'],
-                    'evidence': p['evidence'],
-                    'options': ['promote_to_separate_entity', 'keep_as_alias', 'skip'],
+                    'promoted_variants': promoted_variants,
+                    'options': options,
                 })
         elif len(target_cat_pairs) == 1:
             # All proposals agree → auto_apply with combined evidence.
@@ -556,6 +572,30 @@ def cmd_apply_merge(temp_dir):
                     f"must be one of {sorted(valid)}"
                 )
             continue
+        if kind == 'new_entity_existing_alias':
+            promoted_variants = d.get('promoted_variants') or []
+            valid = (
+                {'keep_as_alias', 'skip'}
+                | {f'use_variant_{i}' for i in range(len(promoted_variants))}
+            )
+            if choice not in valid:
+                pre_errors.append(
+                    f"decision {d_id!r} (kind={kind}): invalid choice {choice!r}, "
+                    f"must be one of {sorted(valid)}"
+                )
+            continue
+        if kind == 'existing_entity_conflict':
+            proposed_variants = d.get('proposed_variants') or []
+            valid = (
+                {'keep_current', 'record_in_notes'}
+                | {f'use_variant_{i}' for i in range(len(proposed_variants))}
+            )
+            if choice not in valid:
+                pre_errors.append(
+                    f"decision {d_id!r} (kind={kind}): invalid choice {choice!r}, "
+                    f"must be one of {sorted(valid)}"
+                )
+            continue
         valid = VALID_CHOICES_BY_KIND.get(kind)
         if valid is None:
             pre_errors.append(f"decision {d_id!r}: unknown kind {kind!r}")
@@ -664,7 +704,7 @@ def cmd_apply_merge(temp_dir):
         kind = d['kind']
         choice = d['choice']
         if kind == 'new_entity_existing_alias':
-            return choice == 'promote_to_separate_entity'
+            return choice.startswith('use_variant_')
         if kind == 'alias_or_new_entity':
             return choice.startswith('use_standalone_')
         if kind == 'conflicting_new_entity_proposals':
@@ -731,31 +771,68 @@ def cmd_apply_merge(temp_dir):
             return True, None
 
         if kind == 'new_entity_existing_alias':
-            if choice == 'promote_to_separate_entity':
-                proposed_source = d.get('proposed_source')
-                host_id = d.get('currently_alias_of')
-                proposed_target = d.get('proposed_target')
-                proposed_category = d.get('proposed_category', '')
-                evidence = d.get('evidence', '')
-                host = _find_term_by_id(glossary, host_id)
-                if host is None:
-                    return False, (
-                        f"decision {d_id!r}: host term id={host_id!r} not in glossary"
+            promoted_variants = d.get('promoted_variants') or []
+            if choice in ('keep_as_alias', 'skip'):
+                return True, None
+            m = re.match(r'^use_variant_(\d+)$', choice)
+            idx = int(m.group(1))
+            chosen = promoted_variants[idx]
+            proposed_source = d.get('proposed_source')
+            host_id = d.get('currently_alias_of')
+            host = _find_term_by_id(glossary, host_id)
+            if host is None:
+                return False, (
+                    f"decision {d_id!r}: host term id={host_id!r} not in glossary"
+                )
+            if proposed_source in host.get('aliases', []):
+                host['aliases'] = [a for a in host['aliases'] if a != proposed_source]
+            combined_chunks = sorted({
+                cid for v in promoted_variants for cid in v.get('evidence_chunks', [])
+            })[:EVIDENCE_REFS_CAP]
+            glossary['terms'].append({
+                'id': proposed_source,
+                'source': proposed_source,
+                'target': chosen['target_proposal'],
+                'category': chosen.get('category', ''),
+                'aliases': [],
+                'gender': 'unknown',
+                'confidence': _confidence_for_evidence_count(len(combined_chunks)),
+                'frequency': 0,
+                'evidence_refs': combined_chunks,
+                'notes': f'promoted from alias of {host_id!r}',
+            })
+            return True, None
+
+        if kind == 'existing_entity_conflict':
+            entity_source = d.get('entity_source')
+            term = _find_term_by_surface(glossary, entity_source)
+            if term is None:
+                return False, (
+                    f"decision {d_id!r}: entity_source {entity_source!r} not in glossary"
+                )
+            if choice == 'keep_current':
+                return True, None
+            proposed_variants = d.get('proposed_variants') or []
+            if choice == 'record_in_notes':
+                for v in proposed_variants:
+                    _append_note(
+                        term,
+                        f"[conflict] target={v['target_proposal']!r} "
+                        f"category={v['category']!r} evidence={v['evidence']!r}",
                     )
-                if proposed_source in host.get('aliases', []):
-                    host['aliases'] = [a for a in host['aliases'] if a != proposed_source]
-                glossary['terms'].append({
-                    'id': proposed_source,
-                    'source': proposed_source,
-                    'target': proposed_target,
-                    'category': proposed_category,
-                    'aliases': [],
-                    'gender': 'unknown',
-                    'confidence': 'low',
-                    'frequency': 0,
-                    'evidence_refs': [],
-                    'notes': f'promoted from alias of {host_id!r}; evidence={evidence!r}',
-                })
+                return True, None
+            m = re.match(r'^use_variant_(\d+)$', choice)
+            idx = int(m.group(1))
+            chosen = proposed_variants[idx]
+            old_target = term.get('target')
+            old_category = term.get('category', '')
+            term['target'] = chosen['target_proposal']
+            term['category'] = chosen.get('category', '')
+            _append_note(
+                term,
+                f"[updated] target {old_target!r} → {chosen['target_proposal']!r}, "
+                f"category {old_category!r} → {chosen.get('category', '')!r}",
+            )
             return True, None
 
         if kind == 'alias_or_new_entity':
