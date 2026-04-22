@@ -704,6 +704,299 @@ class ChunkIdEnforcementTests(unittest.TestCase):
         self.assertIn('no meta file', err)
 
 
+class DecisionErrorAtomicityTests(unittest.TestCase):
+    """Bug fix: a bad decision payload must not leave hashes recorded, otherwise
+    on retry the affected metas are silently skipped and the unresolved
+    decisions are lost permanently."""
+
+    def test_bad_decision_choice_aborts_without_recording_hashes(self):
+        existing = make_term('Tai', '太一')
+        m = empty_meta(alias_hypotheses=[{
+            'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            _, err, code = run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': 'use_variant_0'}],  # wrong choice for kind
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+            self.assertNotEqual(code, 0)
+            # Critical: no hash recorded → re-running prepare-merge surfaces it again.
+            self.assertEqual(g['applied_meta_hashes'], {})
+            out2, _ = run_prepare_merge(tmp)
+            self.assertEqual(len(out2['decisions_needed']), 1)
+            self.assertEqual(out2['decisions_needed'][0]['kind'], 'alias')
+
+    def test_bad_decision_aborts_even_when_some_decisions_are_good(self):
+        existing = make_term('Tai', '太一')
+        m = empty_meta(alias_hypotheses=[
+            {'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': 'a.'},
+            {'variant': 'Taighi', 'may_be_alias_of_source': 'Tai', 'evidence': 'b.'},
+        ])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d_good, d_bad = out['decisions_needed']
+            _, _, code = run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [
+                    {**d_good, 'choice': 'yes_alias'},
+                    {**d_bad, 'choice': 'INVALID'},
+                ],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        self.assertNotEqual(code, 0)
+        # Neither decision applied — even the good one rolls back.
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertEqual(tai['aliases'], [])
+        self.assertEqual(g['applied_meta_hashes'], {})
+
+
+class AttributeHypothesesTests(unittest.TestCase):
+    """Bug fix: attribute_hypotheses must actually mutate the glossary,
+    not be silently dropped."""
+
+    def test_first_gender_evidence_sets_field_and_records_evidence(self):
+        existing = make_term('Tai', '太一', confidence='low')
+        m = empty_meta(attribute_hypotheses=[{
+            'entity_source': 'Tai', 'attribute': 'gender', 'value': 'male',
+            'confidence': 'high', 'evidence': 'He smiled at Tai.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            run_apply_merge(tmp, {
+                'auto_apply': [], 'decisions': [],
+                'consumed_chunk_ids': ['chunk0001'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertEqual(tai['gender'], 'male')
+        self.assertIn('chunk0001', tai['evidence_refs'])
+        self.assertIn('[gender]', tai['notes'])
+
+    def test_corroborating_gender_evidence_promotes_confidence(self):
+        existing = make_term('Tai', '太一', confidence='low')
+        existing['gender'] = 'male'
+        glossary = make_glossary(existing)
+        with tempfile.TemporaryDirectory() as tmp:
+            glossary_mod.save_glossary(os.path.join(tmp, 'glossary.json'), glossary)
+            for i in (1, 2):
+                cid = f'chunk000{i}'
+                meta_mod.save_meta(
+                    os.path.join(tmp, f'output_{cid}.meta.json'),
+                    empty_meta(attribute_hypotheses=[{
+                        'entity_source': 'Tai', 'attribute': 'gender', 'value': 'male',
+                        'confidence': 'high', 'evidence': f'evidence {i}',
+                    }]),
+                )
+                run_apply_merge(tmp, {
+                    'auto_apply': [], 'decisions': [],
+                    'consumed_chunk_ids': [cid],
+                })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertEqual(tai['gender'], 'male')
+        # evidence_refs grows with each corroboration → confidence escalates.
+        self.assertGreaterEqual(len(tai['evidence_refs']), 2)
+        self.assertIn(tai['confidence'], ('medium', 'high'))
+
+    def test_conflicting_gender_evidence_resets_to_unknown_and_records_both(self):
+        existing = make_term('Tai', '太一', confidence='medium')
+        existing['gender'] = 'male'
+        m = empty_meta(attribute_hypotheses=[{
+            'entity_source': 'Tai', 'attribute': 'gender', 'value': 'female',
+            'confidence': 'high', 'evidence': 'She smiled.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            run_apply_merge(tmp, {
+                'auto_apply': [], 'decisions': [],
+                'consumed_chunk_ids': ['chunk0001'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertEqual(tai['gender'], 'unknown')
+        self.assertIn('conflict', tai['notes'])
+        self.assertIn("'male'", tai['notes'])
+        self.assertIn("'female'", tai['notes'])
+
+    def test_attribute_hypothesis_finds_term_via_alias(self):
+        existing = make_term('Tai', '太一', aliases=['Taig'])
+        m = empty_meta(attribute_hypotheses=[{
+            'entity_source': 'Taig', 'attribute': 'gender', 'value': 'male',
+            'confidence': 'high', 'evidence': 'Taig nodded.',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            run_apply_merge(tmp, {
+                'auto_apply': [], 'decisions': [],
+                'consumed_chunk_ids': ['chunk0001'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertEqual(tai['gender'], 'male')
+
+    def test_attribute_hypothesis_for_unknown_entity_is_silent_noop(self):
+        # Sub-agent referenced an entity that's not in the glossary — no
+        # crash, no spurious term added.
+        m = empty_meta(attribute_hypotheses=[{
+            'entity_source': 'Phantom', 'attribute': 'gender', 'value': 'male',
+            'confidence': 'high', 'evidence': '...',
+        }])
+        with temp_workspace(glossary=make_glossary(),
+                            metas={'chunk0001': m}) as tmp:
+            run_apply_merge(tmp, {
+                'auto_apply': [], 'decisions': [],
+                'consumed_chunk_ids': ['chunk0001'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        self.assertEqual(g['terms'], [])
+        # But the chunk is still consumed — we can't surface it again.
+        self.assertIn('chunk0001', g['applied_meta_hashes'])
+
+    def test_non_gender_attribute_logs_to_notes_without_mutation(self):
+        existing = make_term('Tai', '太一')
+        m = empty_meta(attribute_hypotheses=[{
+            'entity_source': 'Tai', 'attribute': 'occupation', 'value': 'teacher',
+            'confidence': 'medium', 'evidence': '...',
+        }])
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            run_apply_merge(tmp, {
+                'auto_apply': [], 'decisions': [],
+                'consumed_chunk_ids': ['chunk0001'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertNotIn('occupation', tai)
+        self.assertIn('occupation', tai['notes'])
+
+
+class AliasOrNewEntityCollisionTests(unittest.TestCase):
+    """Bug fix: same-chunk new_entity + alias_hypothesis on the same variant
+    must not produce two competing decisions (auto_apply add_entity AND
+    yes_alias on the same surface), since accepting the alias would then fail
+    surface-form uniqueness."""
+
+    def test_collision_emits_single_alias_or_new_entity_decision(self):
+        # Glossary has Tai. Same chunk says "Taig is a new entity" AND
+        # "Taig may be an alias of Tai". Without the fix we'd auto_apply Taig
+        # as a standalone source AND emit a yes_alias decision — accepting
+        # the alias would then try to make Taig both source and alias.
+        existing = make_term('Tai', '太一', 'person')
+        m = empty_meta(
+            new_entities=[{
+                'source': 'Taig', 'target_proposal': '泰格', 'category': 'person',
+                'evidence': 'Taig walked.',
+            }],
+            alias_hypotheses=[{
+                'variant': 'Taig', 'may_be_alias_of_source': 'Tai',
+                'evidence': 'Taig might be Tai.',
+            }],
+        )
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+        # No auto_apply (the collision pulled it out).
+        self.assertEqual(out['auto_apply'], [])
+        # Single combined decision.
+        self.assertEqual(len(out['decisions_needed']), 1)
+        d = out['decisions_needed'][0]
+        self.assertEqual(d['kind'], 'alias_or_new_entity')
+        self.assertEqual(d['variant'], 'Taig')
+        self.assertEqual(d['candidate_source'], 'Tai')
+        self.assertEqual(d['proposed_target'], '泰格')
+        self.assertEqual(set(d['options']),
+                         {'yes_alias', 'promote_to_separate_entity', 'skip'})
+
+    def test_collision_yes_alias_attaches_alias_only(self):
+        existing = make_term('Tai', '太一', 'person')
+        m = empty_meta(
+            new_entities=[{
+                'source': 'Taig', 'target_proposal': '泰格', 'category': 'person',
+                'evidence': 'Taig walked.',
+            }],
+            alias_hypotheses=[{
+                'variant': 'Taig', 'may_be_alias_of_source': 'Tai',
+                'evidence': 'Taig might be Tai.',
+            }],
+        )
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            run_apply_merge(tmp, {
+                'auto_apply': out['auto_apply'],
+                'decisions': [{**d, 'choice': 'yes_alias'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        # Tai gains alias, no standalone Taig term created.
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertIn('Taig', tai['aliases'])
+        self.assertNotIn('Taig', [t['source'] for t in g['terms']])
+
+    def test_collision_promote_creates_standalone_only(self):
+        existing = make_term('Tai', '太一', 'person')
+        m = empty_meta(
+            new_entities=[{
+                'source': 'Taig', 'target_proposal': '泰格', 'category': 'person',
+                'evidence': 'Taig walked.',
+            }],
+            alias_hypotheses=[{
+                'variant': 'Taig', 'may_be_alias_of_source': 'Tai',
+                'evidence': 'Taig might be Tai.',
+            }],
+        )
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            run_apply_merge(tmp, {
+                'auto_apply': out['auto_apply'],
+                'decisions': [{**d, 'choice': 'promote_to_separate_entity'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertNotIn('Taig', tai['aliases'])
+        taig = next((t for t in g['terms'] if t['source'] == 'Taig'), None)
+        self.assertIsNotNone(taig)
+        self.assertEqual(taig['target'], '泰格')
+        self.assertEqual(taig['evidence_refs'], ['chunk0001'])
+
+    def test_collision_skip_leaves_glossary_unchanged_but_marks_consumed(self):
+        existing = make_term('Tai', '太一', 'person')
+        m = empty_meta(
+            new_entities=[{
+                'source': 'Taig', 'target_proposal': '泰格', 'category': 'person',
+                'evidence': '...',
+            }],
+            alias_hypotheses=[{
+                'variant': 'Taig', 'may_be_alias_of_source': 'Tai', 'evidence': '...',
+            }],
+        )
+        with temp_workspace(glossary=make_glossary(existing),
+                            metas={'chunk0001': m}) as tmp:
+            out, _ = run_prepare_merge(tmp)
+            d = out['decisions_needed'][0]
+            run_apply_merge(tmp, {
+                'auto_apply': [],
+                'decisions': [{**d, 'choice': 'skip'}],
+                'consumed_chunk_ids': out['consumed_chunk_ids'],
+            })
+            g = glossary_mod.load_glossary(os.path.join(tmp, 'glossary.json'))
+        tai = next(t for t in g['terms'] if t['source'] == 'Tai')
+        self.assertEqual(tai['aliases'], [])
+        self.assertEqual([t['source'] for t in g['terms']], ['Tai'])
+        self.assertIn('chunk0001', g['applied_meta_hashes'])
+
+
 class StatusTests(unittest.TestCase):
     def test_reports_translated_meta_consumed_counts(self):
         with tempfile.TemporaryDirectory() as tmp:

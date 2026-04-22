@@ -219,6 +219,7 @@ Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translate
      - `alias` — `{variant, candidate_source, evidence}`. Choices: `yes_alias` / `no_separate_entity` / `skip`.
      - `conflict` — `{entity_source, field, current, proposed, evidence}`. Choices: `keep_current` / `accept_proposed` / `record_in_notes`.
      - `new_entity_existing_alias` — `{proposed_source, currently_alias_of, proposed_target, proposed_category, evidence}`. Choices: `promote_to_separate_entity` / `keep_as_alias` / `skip`.
+     - `alias_or_new_entity` — same chunk's meta proposed `variant` BOTH as a new standalone entity AND as an alias of `candidate_source`; the two would collide on surface uniqueness, so pick one. `{variant, candidate_source, proposed_target, proposed_category, evidence, evidence_chunks}`. Choices: `yes_alias` (attach as alias of candidate) / `promote_to_separate_entity` (add as standalone with the proposed target+category) / `skip`.
      - `conflicting_new_entity_proposals` — `{source, variants: [{target_proposal, category, evidence, evidence_chunks}, ...]}`. Choices: `use_variant_0`, `use_variant_1`, ..., `skip`.
    - `consumed_chunk_ids` — every meta file scanned this round (regardless of whether it produced a finding). These hashes get recorded in `applied_meta_hashes` on apply.
    - `malformed_meta_chunk_ids` — meta files that failed validation. Quarantined: not consumed, not crashing the run. Surface them in your batch progress.
@@ -244,6 +245,8 @@ Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translate
    ```
 
    Surface the summary JSON (`auto_applied`, `decisions_resolved`, `consumed_chunks`, `errors`) in your batch progress message.
+
+   **apply-merge is transactional.** If any decision is malformed (wrong choice for kind, missing fields, references a non-existent entity), the entire batch aborts with a non-zero exit and stderr details — no glossary mutation, no hashes recorded. On non-zero exit, fix the offending decision and re-pipe; `prepare-merge` will surface the same proposals because nothing was consumed.
 
 On a fresh run after a previous interrupted batch, `prepare-merge` will pick up any meta files left behind. Don't manually delete them.
 

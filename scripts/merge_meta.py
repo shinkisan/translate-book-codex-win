@@ -47,9 +47,14 @@ VALID_CHOICES_BY_KIND = {
     'new_entity_existing_alias': frozenset(
         {'promote_to_separate_entity', 'keep_as_alias', 'skip'}
     ),
+    'alias_or_new_entity': frozenset(
+        {'yes_alias', 'promote_to_separate_entity', 'skip'}
+    ),
     # conflicting_new_entity_proposals: choices generated dynamically from variant count;
     # validation happens at apply time against the decision item's options array.
 }
+
+VALID_GENDER_VALUES = ('male', 'female', 'nonbinary', 'unknown')
 
 
 def _glossary_path(temp_dir):
@@ -106,6 +111,12 @@ def _append_evidence_ref(term, chunk_id):
         _confidence_for_evidence_count(len(refs)),
     )
     return True
+
+
+def _append_note(term, line):
+    """Append a line to a term's notes, keeping it readable."""
+    existing = term.get('notes', '') or ''
+    term['notes'] = (existing + '\n' + line).lstrip('\n')
 
 
 def _build_surface_index(glossary):
@@ -192,6 +203,56 @@ def cmd_prepare_merge(temp_dir):
         next_decision_id += 1
         return did
 
+    # Detect collisions between same-batch new_entity proposals and alias_hypotheses.
+    # If chunk0001 says new_entities=[{source:Taig}] AND alias_hypotheses=[{variant:Taig,
+    # may_be_alias_of_source:Tai}], then "Taig" can't be both a standalone source AND
+    # an alias of Tai (surface-form uniqueness violation). Emit a single combined
+    # `alias_or_new_entity` decision and remove the source from grouped_new_entities so
+    # it doesn't ALSO produce an auto_apply / separate decision below.
+    consumed_alias_keys = set()  # (chunk_id, variant, candidate) of already-handled hyps
+    for chunk_id, data in loaded.items():
+        for ah in data.get('alias_hypotheses', []):
+            variant = ah['variant']
+            if variant not in grouped_new_entities:
+                continue
+            candidate_source = ah['may_be_alias_of_source']
+            candidate_term = _find_term_by_surface(glossary, candidate_source)
+            if candidate_term is None:
+                # Candidate isn't in glossary; the alias path is moot. Leave
+                # the new_entity proposal alone.
+                continue
+            if variant in surface_idx:
+                # Variant already exists as a surface in the glossary; the
+                # new_entity_existing_alias / conflict path will handle it.
+                continue
+            # Collision: same chunk wants both a standalone Taig AND Taig→Tai alias.
+            # Emit one combined decision; remove the new_entity proposal so the
+            # loop below doesn't double-handle it.
+            proposals = grouped_new_entities.pop(variant)
+            target_cat_pairs = {(p['target_proposal'], p['category']) for p in proposals}
+            if len(target_cat_pairs) == 1:
+                target, category = next(iter(target_cat_pairs))
+                pending_evidence_chunks = sorted({p['chunk_id'] for p in proposals})
+            else:
+                # Cross-chunk disagreement on the proposed target/category as
+                # well. Pick the first proposal's values; the alias decision
+                # captures the harder question (alias vs standalone).
+                target = proposals[0]['target_proposal']
+                category = proposals[0]['category']
+                pending_evidence_chunks = sorted({p['chunk_id'] for p in proposals})
+            decisions_needed.append({
+                'id': _new_decision_id(),
+                'kind': 'alias_or_new_entity',
+                'variant': variant,
+                'candidate_source': candidate_term['source'],
+                'proposed_target': target,
+                'proposed_category': category,
+                'evidence': ah['evidence'],
+                'evidence_chunks': pending_evidence_chunks,
+                'options': ['yes_alias', 'promote_to_separate_entity', 'skip'],
+            })
+            consumed_alias_keys.add((chunk_id, variant, candidate_source))
+
     for src, proposals in grouped_new_entities.items():
         target_cat_pairs = {(p['target_proposal'], p['category']) for p in proposals}
         if src in surface_idx:
@@ -268,6 +329,8 @@ def cmd_prepare_merge(temp_dir):
         for ah in data.get('alias_hypotheses', []):
             variant = ah['variant']
             candidate_source = ah['may_be_alias_of_source']
+            if (chunk_id, variant, candidate_source) in consumed_alias_keys:
+                continue  # already wrapped into an alias_or_new_entity decision
             candidate_term = _find_term_by_surface(glossary, candidate_source)
             if candidate_term is None:
                 continue  # candidate not in glossary; alias hypothesis is moot
@@ -372,13 +435,96 @@ def cmd_apply_merge(temp_dir):
             sys.stderr.write(f"  - {e}\n")
         sys.exit(2)
 
-    # Now safe to mutate. Process used_term_sources first (it's purely additive).
+    # Pre-validate every decision payload BEFORE we mutate. If any decision is
+    # malformed (wrong kind, invalid choice for kind, missing fields) we abort
+    # the entire transaction without writing any hashes — otherwise on retry
+    # prepare-merge would skip the affected metas and the unresolved decisions
+    # would be lost forever.
+    pre_errors = []
+    for d in decisions:
+        d_id = d.get('id')
+        kind = d.get('kind')
+        choice = d.get('choice')
+        if kind is None or choice is None:
+            pre_errors.append(f"decision {d_id!r} missing 'kind' or 'choice'")
+            continue
+        if kind == 'conflicting_new_entity_proposals':
+            variants = d.get('variants') or []
+            valid = {f'use_variant_{i}' for i in range(len(variants))} | {'skip'}
+            if choice not in valid:
+                pre_errors.append(
+                    f"decision {d_id!r} (kind={kind}): invalid choice {choice!r}, "
+                    f"must be one of {sorted(valid)}"
+                )
+            continue
+        valid = VALID_CHOICES_BY_KIND.get(kind)
+        if valid is None:
+            pre_errors.append(f"decision {d_id!r}: unknown kind {kind!r}")
+            continue
+        if choice not in valid:
+            pre_errors.append(
+                f"decision {d_id!r} (kind={kind}): invalid choice {choice!r}, "
+                f"must be one of {sorted(valid)}"
+            )
+
+    if pre_errors:
+        sys.stderr.write("error: apply-merge aborting before any state mutation:\n")
+        for e in pre_errors:
+            sys.stderr.write(f"  - {e}\n")
+        sys.exit(2)
+
+    # Now safe to mutate. Process used_term_sources first (purely additive).
     for chunk_id, data in consumed_metas.items():
         for src in data.get('used_term_sources', []):
             term = _find_term_by_surface(glossary, src)
             if term is None:
                 continue
             _append_evidence_ref(term, chunk_id)
+
+    # Process attribute_hypotheses (currently: gender). Roadmap rule:
+    # unknown → first explicit evidence sets value + promotes confidence;
+    # corroborating evidence keeps value + promotes confidence; conflicting
+    # evidence resets to unknown and records both sides in notes.
+    for chunk_id, data in consumed_metas.items():
+        for ah in data.get('attribute_hypotheses', []):
+            entity_source = ah.get('entity_source')
+            attribute = ah.get('attribute')
+            value = ah.get('value')
+            evidence = ah.get('evidence', '')
+            term = _find_term_by_surface(glossary, entity_source)
+            if term is None:
+                continue
+            if attribute == 'gender':
+                if value not in VALID_GENDER_VALUES:
+                    # Schema validation accepted any string; we silently no-op
+                    # on values the glossary doesn't model.
+                    continue
+                current = term.get('gender', 'unknown')
+                if current == 'unknown':
+                    term['gender'] = value
+                    _append_evidence_ref(term, chunk_id)
+                    _append_note(
+                        term,
+                        f"[gender] {value} set (chunk {chunk_id}); evidence={evidence!r}"
+                    )
+                elif current == value:
+                    # Corroborating — promote entity confidence.
+                    _append_evidence_ref(term, chunk_id)
+                else:
+                    # Conflict: revert to unknown, record both observations.
+                    term['gender'] = 'unknown'
+                    _append_note(
+                        term,
+                        f"[gender] conflict — was {current!r}, observed {value!r} "
+                        f"in chunk {chunk_id}; evidence={evidence!r}; reverted to 'unknown'"
+                    )
+            # Other attributes: log to notes but don't mutate canonical fields.
+            else:
+                _append_note(
+                    term,
+                    f"[attr {attribute!r}] observed {value!r} in chunk {chunk_id}; "
+                    f"evidence={evidence!r}"
+                )
 
     # Phase 2: auto_apply new entities.
     for entry in auto_apply:
@@ -402,28 +548,16 @@ def cmd_apply_merge(temp_dir):
         glossary['terms'].append(new_term)
         auto_applied += 1
 
-    # Phase 3: process decisions.
-    decision_index = {d['id']: d for d in _flat_decisions(consumed_metas)}
-    # decision_index above only knows what prepare-merge would have built; for
-    # apply-merge we trust the decisions JSON the orchestrator passed in. The
-    # critical thing is to validate `choice` against `kind`.
+    # Phase 3: process decisions. All choices have been pre-validated above;
+    # any error here is a referential failure (entity not in glossary, etc.)
+    # and aborts the whole transaction so the orchestrator can re-attempt
+    # with a corrected payload.
     for d in decisions:
         d_id = d.get('id')
-        choice = d.get('choice')
-        # The orchestrator must round-trip the original decision item; we need
-        # at minimum the `kind` to dispatch and validate.
-        kind = d.get('kind')
-        if kind is None or choice is None:
-            errors.append(f"decision {d_id!r} missing 'kind' or 'choice'")
-            continue
+        kind = d['kind']
+        choice = d['choice']
 
         if kind == 'alias':
-            if choice not in VALID_CHOICES_BY_KIND['alias']:
-                errors.append(
-                    f"decision {d_id!r} (kind=alias): invalid choice {choice!r}, "
-                    f"must be one of {sorted(VALID_CHOICES_BY_KIND['alias'])}"
-                )
-                continue
             if choice == 'yes_alias':
                 variant = d.get('variant')
                 candidate_source = d.get('candidate_source')
@@ -439,12 +573,6 @@ def cmd_apply_merge(temp_dir):
             decisions_resolved += 1
 
         elif kind == 'conflict':
-            if choice not in VALID_CHOICES_BY_KIND['conflict']:
-                errors.append(
-                    f"decision {d_id!r} (kind=conflict): invalid choice {choice!r}, "
-                    f"must be one of {sorted(VALID_CHOICES_BY_KIND['conflict'])}"
-                )
-                continue
             entity_source = d.get('entity_source')
             field = d.get('field')
             current = d.get('current')
@@ -457,27 +585,22 @@ def cmd_apply_merge(temp_dir):
                 )
                 continue
             if choice == 'record_in_notes':
-                term['notes'] = (term.get('notes', '') + (
-                    f"\n[conflict] {field}: current={current!r} observed_better={proposed!r}"
-                    f" evidence={evidence!r}"
-                )).lstrip()
+                _append_note(
+                    term,
+                    f"[conflict] {field}: current={current!r} "
+                    f"observed_better={proposed!r} evidence={evidence!r}",
+                )
             elif choice == 'accept_proposed':
                 old_value = term.get(field)
                 term[field] = proposed
-                term['notes'] = (term.get('notes', '') + (
-                    f"\n[updated] {field}: was={old_value!r} now={proposed!r}"
-                )).lstrip()
+                _append_note(
+                    term,
+                    f"[updated] {field}: was={old_value!r} now={proposed!r}",
+                )
             # keep_current: no-op
             decisions_resolved += 1
 
         elif kind == 'new_entity_existing_alias':
-            if choice not in VALID_CHOICES_BY_KIND['new_entity_existing_alias']:
-                errors.append(
-                    f"decision {d_id!r} (kind=new_entity_existing_alias): "
-                    f"invalid choice {choice!r}, must be one of "
-                    f"{sorted(VALID_CHOICES_BY_KIND['new_entity_existing_alias'])}"
-                )
-                continue
             if choice == 'promote_to_separate_entity':
                 proposed_source = d.get('proposed_source')
                 host_id = d.get('currently_alias_of')
@@ -506,15 +629,40 @@ def cmd_apply_merge(temp_dir):
                 })
             decisions_resolved += 1
 
+        elif kind == 'alias_or_new_entity':
+            variant = d.get('variant')
+            candidate_source = d.get('candidate_source')
+            if choice == 'yes_alias':
+                term = _find_term_by_surface(glossary, candidate_source)
+                if term is None:
+                    errors.append(
+                        f"decision {d_id!r}: candidate source {candidate_source!r} "
+                        f"not in glossary"
+                    )
+                    continue
+                if variant not in term.get('aliases', []):
+                    term.setdefault('aliases', []).append(variant)
+            elif choice == 'promote_to_separate_entity':
+                proposed_target = d.get('proposed_target')
+                proposed_category = d.get('proposed_category', '')
+                evidence_chunks = list(d.get('evidence_chunks', []))[:EVIDENCE_REFS_CAP]
+                glossary['terms'].append({
+                    'id': variant,
+                    'source': variant,
+                    'target': proposed_target,
+                    'category': proposed_category,
+                    'aliases': [],
+                    'gender': 'unknown',
+                    'confidence': _confidence_for_evidence_count(len(evidence_chunks)),
+                    'frequency': 0,
+                    'evidence_refs': evidence_chunks,
+                    'notes': '',
+                })
+            # skip: no-op
+            decisions_resolved += 1
+
         elif kind == 'conflicting_new_entity_proposals':
             variants = d.get('variants') or []
-            valid_choices = {f'use_variant_{i}' for i in range(len(variants))} | {'skip'}
-            if choice not in valid_choices:
-                errors.append(
-                    f"decision {d_id!r} (kind=conflicting_new_entity_proposals): "
-                    f"invalid choice {choice!r}, must be one of {sorted(valid_choices)}"
-                )
-                continue
             if choice == 'skip':
                 decisions_resolved += 1
                 continue
@@ -538,11 +686,18 @@ def cmd_apply_merge(temp_dir):
             })
             decisions_resolved += 1
 
-        else:
-            errors.append(f"decision {d_id!r}: unknown kind {kind!r}")
-            continue
+    if errors:
+        # Don't write the glossary, don't record any hashes. Orchestrator
+        # retries with fixed payload; prepare-merge will surface the same
+        # decisions again because no hashes were recorded.
+        sys.stderr.write("error: apply-merge failed during decision dispatch; "
+                         "aborting transaction (no glossary or hash mutations persisted):\n")
+        for e in errors:
+            sys.stderr.write(f"  - {e}\n")
+        sys.exit(2)
 
-    # Phase 4: record content hashes for all consumed metas.
+    # Phase 4: record content hashes for all consumed metas. Reached only
+    # when every decision succeeded.
     glossary.setdefault('applied_meta_hashes', {})
     for chunk_id, data in consumed_metas.items():
         glossary['applied_meta_hashes'][chunk_id] = meta_mod.meta_content_hash(data)
@@ -562,14 +717,6 @@ def cmd_apply_merge(temp_dir):
         'errors': errors,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    if errors:
-        sys.exit(1)
-
-
-def _flat_decisions(_metas):
-    # Placeholder: decisions in the input JSON are trusted to carry their own
-    # `kind` field. We don't reconstruct them from metas.
-    return []
 
 
 def cmd_status(temp_dir):
