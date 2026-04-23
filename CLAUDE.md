@@ -31,6 +31,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 ## Conventions
 
 - Only `chunk*.md` naming — no `page*` legacy support
+- Pipeline output artifacts use the canonical names `book.html`, `book_doc.html`, `book.docx`, `book.epub`, `book.pdf`. Internal scripts and skip/cache logic depend on these names; if title-based filenames are added later they must be optional aliases/copies, not silent replacements
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
 - Subagent instructions in SKILL.md must be platform-neutral (work on Claude Code, OpenClaw, Codex)

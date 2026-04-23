@@ -242,6 +242,15 @@ Phase 1 grows the glossary batch-by-batch, so the first batch sees the smallest 
 
 > The specific schemas and file layouts in each phase are illustrative — they may shift as Phase 1 hits real data. Phase 4 is gated on data; Phase 3 may be re-scoped or dropped if Phase 1 alone proves "good enough".
 
+### Parallel track — Pipeline / UX backlog (not started, separate from issue #7)
+
+Recent PR discussions also surfaced several useful workflow improvements, but these are broader than one-off patches and touch repo contracts (artifact names, temp-dir behavior, cleanup semantics, or EPUB compatibility scope). These are being tracked as maintainer-owned roadmap items rather than merged directly from the current PRs:
+
+- **Explicit EPUB cover support.** Add `--cover <image>` and pass it through the HTML -> EPUB Calibre step. Keep `--cover-from <epub>` / EPUB cover auto-extraction out of scope until the project is ready to own EPUB parsing compatibility across different package layouts. (context: closed #3)
+- **Configurable temp workspace location.** Keep the current cwd-local `{book_name}_temp/` default for compatibility. If this is revisited later, prefer an explicit `--temp-root` / `--work-dir` style option rather than silently changing the default location. (context: closed #4)
+- **Safer Calibre/Pandoc artifact cleanup.** Continue improving cleanup rules incrementally under regression tests, while preserving the current page-number detection semantics and not stripping real display-math delimiters or content numbers. (context: closed #5)
+- **Optional user-facing export names.** Keep canonical pipeline artifacts as `book.html`, `book_doc.html`, `book.docx`, `book.epub`, and `book.pdf`. If title-based filenames are added later, they should likely be optional exported aliases/copies rather than a silent replacement of the internal artifact contract. (context: closed #6)
+
 ## Star History
 
 If you find this project helpful, please consider giving it a Star ⭐!

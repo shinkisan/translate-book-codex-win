@@ -18,3 +18,13 @@ Generated outputs do not belong here. Put them under `tests/.artifacts/`.
 | Alias-stress (opt-in) | `diligent-dick` | ~57 | 5 | When changing `merge_meta` or `glossary` |
 
 The smoke baseline is the cheapest way to exercise convert → chunk → glossary → merge → build. It deliberately gives up inline-image coverage; use the gold baseline whenever image handling could be affected. The alias-stress baseline is intentionally larger than the gold one because its value lies in `Dick / Richard / Stuart` co-occurring across ~9 consecutive chunks — a contested-variant cross-batch scenario the smaller baselines cannot reproduce.
+
+## When adding a new baseline
+
+A baseline that has never been run is not a baseline — it's just a checked-in book. Before merging:
+
+1. Run the full pipeline on it once (`convert.py` → translate via the skill → `merge_and_build.py`).
+2. Capture the real chunk count, image count, and any cross-chunk entity / alias evidence in the new `SOURCE.md`. Replace any estimates you used while picking the book.
+3. Note coverage gaps explicitly (e.g. "cover only, no inline images" for sleepy-hollow). Future readers should not have to re-derive what this baseline does and does not exercise.
+
+Numbers in `SOURCE.md` come from a measured run, not from Project Gutenberg metadata or word-count rules of thumb.

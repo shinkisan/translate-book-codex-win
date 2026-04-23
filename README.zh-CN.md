@@ -242,6 +242,15 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 
 > 各阶段的具体 schema 和文件布局是示意性的,会在 Phase 1 接触真实数据后调整。Phase 4 取决于实际数据；如果 Phase 1 已经"够好",Phase 3 可能重新调整范围或被放弃。
 
+### 平行线路 — Pipeline / UX backlog（未开始,独立于 issue #7）
+
+最近几轮 PR 讨论也暴露出一些有价值的工作流改进,但它们都不属于“一次性小补丁”：会触及仓库契约（产物命名、temp-dir 行为、清理语义、或 EPUB 兼容性边界）。因此这些内容会被收敛为 maintainer 自己维护的 roadmap 项,而不是直接从当前 PR 合入:
+
+- **显式 EPUB 封面支持**。增加 `--cover <image>`,并在 HTML -> EPUB 的 Calibre 步骤透传。`--cover-from <epub>` / EPUB 封面自动提取先不纳入当前范围,等项目准备好承担不同 EPUB 包布局的解析兼容性后再考虑。(context: closed #3)
+- **可配置的 temp 工作目录位置**。当前默认的 cwd-local `{book_name}_temp/` 约定保持不变以兼容现有流程。如果后续要调整,更适合新增显式 `--temp-root` / `--work-dir` 一类参数,而不是静默改变默认位置。(context: closed #4)
+- **更安全的 Calibre/Pandoc 噪声清理**。继续在回归测试保护下逐步增加清理规则,同时保留当前页码检测语义,避免误删真实数字内容或显示公式的定界符。(context: closed #5)
+- **可选的面向用户导出文件名**。流水线内部的 canonical 产物仍保持 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf`。如果后续支持按译后标题命名,更合理的方向可能是额外导出一份 alias/copy,而不是静默替换内部产物契约。(context: closed #6)
+
 ## Star History
 
 如果这个项目对您有帮助，请考虑为其点亮一颗 Star ⭐！
