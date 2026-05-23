@@ -117,6 +117,19 @@ python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub
 python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
 
+## 反馈与贡献
+
+请优先提交详细的 GitHub issue，而不是直接从 pull request 开始。本项目按 AI 辅助的 skill pipeline 维护，任何变更都需要放在同一个由维护者掌握的上下文里，结合当前编排规则、chunk/manifest 契约、baseline 资产和发布流程一起评估。
+
+Pull request 不是首选贡献入口，可能会被关闭并转为 issue 继续讨论。如果你已经有 patch，可以把思路、关键 diff、失败用例或验证结果写进 issue；维护者可能会据此重写或拆分实现，再决定是否合入。
+
+一个有用的 issue 应包含：
+
+- 当前行为与期望行为
+- 输入格式和运行环境，例如 PDF/DOCX/EPUB、操作系统、Python、Calibre、Pandoc 版本
+- 尽量小的复现步骤，或可公开使用的小样本文件
+- 能说明问题的日志、截图或生成文件名
+
 ## 流程详解
 
 ### 第一步：转换

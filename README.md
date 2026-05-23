@@ -117,6 +117,19 @@ python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub
 python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
 
+## Feedback and Contributions
+
+Please open a detailed GitHub issue instead of starting with a pull request. This project is maintained as an AI-assisted skill pipeline, and changes need to be evaluated against the current orchestration rules, chunk/manifest contracts, baseline assets, and release flow in one maintainer-owned context.
+
+Pull requests are not the preferred contribution path and may be closed in favor of an issue. If you already have a patch, include the idea, key diff, failing case, or verification notes in the issue; the maintainer may rework or split the implementation before merging.
+
+A useful issue should include:
+
+- Current behavior and expected behavior
+- Input format and environment, such as PDF/DOCX/EPUB, OS, Python, Calibre, and Pandoc versions
+- Minimal reproduction steps or a small public-domain sample when possible
+- Logs, screenshots, or generated file names that show the failure
+
 ## Pipeline Details
 
 ### Step 1: Convert
