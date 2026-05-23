@@ -242,7 +242,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 ## 后续规划
 
-跟踪 [issue #7](https://github.com/deusyu/translate-book/issues/7) — chunk 之间的人名/术语不一致以及代词/性别错误。当前的术语表功能已覆盖高频主实体（主角、主要地名、反复出现的领域术语），但低频角色、拼写变体、代词指代尚未覆盖。整体方案分为四个可独立交付的阶段。
+跟踪 [issue #7](https://github.com/deusyu/translate-book/issues/7) — chunk 之间的人名/术语不一致以及代词/性别错误。当前流水线已覆盖高频实体、别名/拼写漂移、相邻 chunk 的代词上下文，以及术语表变更后的精确重译。整书自然度校验仍是后续质量阶段。整体方案分为四个可独立交付的阶段。
 
 ### 设计原则
 
