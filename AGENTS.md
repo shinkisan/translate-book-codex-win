@@ -65,7 +65,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 
 - Python 3.12+ is pre-installed; no version manager needed.
 - System dependencies (Calibre, Pandoc) and pip packages (pypandoc, beautifulsoup4) are installed by the update script.
-- All 205 unit tests pass with Python stdlib alone (no pip packages or external binaries needed for `python3 -m unittest discover`).
+- Unit tests only依赖 Python stdlib（不需要 pip 包或外部二进制，直接 `python3 -m unittest discover` 即可运行）。
 
 ### Running tests
 
