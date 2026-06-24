@@ -288,7 +288,7 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 
 如果这个项目帮你节省了时间，欢迎赞助支持后续维护和改进。
 
-[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github)](https://github.com/sponsors/deusyu)
+[![Sponsor](https://img.shields.io/github/sponsors/deusyu?label=Sponsor&logo=github)](https://github.com/sponsors/deusyu)
 
 ## License
 
