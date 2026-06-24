@@ -288,7 +288,7 @@ If you find this project helpful, please consider giving it a Star ⭐!
 
 If this project saves you time, consider sponsoring to keep it maintained and improved.
 
-[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github)](https://github.com/sponsors/deusyu)
+[![Sponsor](https://img.shields.io/github/sponsors/deusyu?label=Sponsor&logo=github)](https://github.com/sponsors/deusyu)
 
 ## License
 
