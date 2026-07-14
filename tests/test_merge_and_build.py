@@ -69,7 +69,7 @@ class GenerateFormatTests(unittest.TestCase):
             self.assertEqual(result, output_file)
             run_mock.assert_called_once()
             cmd = run_mock.call_args.args[0]
-            self.assertEqual(cmd[0], "python3")
+            self.assertEqual(cmd[0], sys.executable)
             self.assertEqual(cmd[2], html_file)
             self.assertEqual(cmd[4], output_file)
 

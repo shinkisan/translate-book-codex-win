@@ -1,10 +1,10 @@
-# Rainman Translate Book
+# Translate Book for Windows + Codex
 
 English | [中文](README.zh-CN.md)
 
-Claude Code skill that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
+Codex skill for Windows that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 
-> Inspired by [claude_translater](https://github.com/wizlijun/claude_translater). The original project uses shell scripts as its entry point, coordinating the Claude CLI with multiple step scripts to perform chunked translation. This project restructures the workflow as a Claude Code Skill, using subagents to translate chunks in parallel, with manifest-driven integrity checks, resumable runs, and multi-format output unified into a single pipeline. As the project structure and implementation differ significantly from the original, this is an independent project rather than a fork.
+This Windows/Codex port is based on the original translate-book pipeline. It keeps resumable chunk translation and multi-format output while using the active Windows Python interpreter, discovering standard Calibre/Pandoc installations, and installing as a native Codex skill.
 
 ---
 
@@ -20,7 +20,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 Split into chunks (chunk0001.md, chunk0002.md, ...)
   │  manifest.json tracks chunk hashes
   ▼
-Parallel subagents (8 concurrent by default)
+Parallel Codex subagents (3 concurrent by default)
   │  each subagent: read 1 chunk → translate → write output_chunk*.md
   │  batched to respect API rate limits
   ▼
@@ -34,7 +34,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 
 ## Features
 
-- **Parallel subagents** — 8 concurrent translators per batch, each with isolated context
+- **Parallel subagents** — up to 3 concurrent translators per batch by default, reserving one agent slot for orchestration
 - **Resumable + selective re-translation** — chunk-level resume, with `run_state.json` tracking glossary-sensitive re-translation
 - **Neighbor context** — each chunk can see short read-only excerpts from adjacent chunks for pronoun and entity resolution
 - **Manifest validation** — SHA-256 hash tracking prevents stale or corrupt outputs from being merged
@@ -45,48 +45,49 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 
 ## Prerequisites
 
-- **Claude Code CLI** — installed and authenticated
-- **Calibre** — `ebook-convert` command must be available ([download](https://calibre-ebook.com/))
-- **Pandoc** — for HTML↔Markdown conversion ([download](https://pandoc.org/))
+- **Windows 10/11** with **Codex desktop or CLI** installed and authenticated
+- **Calibre** — PATH is optional when installed in the standard `C:\Program Files\Calibre2` location ([download](https://calibre-ebook.com/))
+- **Pandoc** — PATH is optional for a standard Windows installation ([download](https://pandoc.org/))
 - **Python 3** with:
   - `pypandoc` — required (`pip install pypandoc`)
   - `beautifulsoup4` — optional, for better TOC generation (`pip install beautifulsoup4`)
 
+Install the required external tools with verified Windows Package Manager IDs:
+
+```powershell
+winget install --id calibre.calibre --exact --accept-source-agreements --accept-package-agreements
+winget install --id JohnMacFarlane.Pandoc --exact --accept-source-agreements --accept-package-agreements
+```
+
+Open a new PowerShell window after installation so PATH changes are visible. `pypandoc` is only a Python wrapper; installing it does not install `pandoc.exe`.
+
 ## Quick Start
 
-### 1. Install the skill
+### 1. Clone and install the skill
 
-**Option A: npx (recommended)**
+Run in PowerShell:
 
-```bash
-npx skills add deusyu/translate-book -a claude-code -g
+```powershell
+git clone https://github.com/shinkisan/translate-book-codex.git
+cd translate-book-codex
+.\install.ps1
 ```
 
-**Option B: ClawHub**
+The installer installs Python packages and copies `SKILL.md` plus `scripts/` to `%CODEX_HOME%\skills\translate-book` (or `%USERPROFILE%\.codex\skills\translate-book`). It never installs Calibre or Pandoc silently. Install those separately with the `winget` commands above, then verify with:
 
-```bash
-clawhub install translate-book
+```powershell
+python .\scripts\doctor.py
 ```
 
-**Option C: Git clone**
-
-```bash
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
-```
+Use `.\install.ps1 -Force` to update an existing installation, or `-SkipDependencies` when dependencies are already managed elsewhere.
 
 
 ### 2. Translate a book
 
-In Claude Code, say:
+In Codex, say:
 
 ```
-translate /path/to/book.pdf to Chinese
-```
-
-Or use the slash command:
-
-```
-/translate-book translate /path/to/book.pdf to Japanese
+Translate D:\Books\book.pdf to Chinese with the translate-book skill.
 ```
 
 The skill handles the full pipeline automatically — convert, chunk, translate in parallel, validate, merge, and build all output formats.
@@ -111,12 +112,12 @@ All files are in `{book_name}_temp/`:
 
 ### Full-Pipeline Baseline Example
 
-```bash
-mkdir -p tests/.artifacts
-cd tests/.artifacts
-python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+```powershell
+New-Item -ItemType Directory -Force tests\.artifacts | Out-Null
+Set-Location tests\.artifacts
+python ..\..\scripts\convert.py ..\baselines\standard-alice\standard-alice.epub --olang zh
 # then run translation via the skill
-python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
+python ..\..\scripts\merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
 
 ## Feedback and Contributions
@@ -137,7 +138,7 @@ A useful issue should include:
 ### Step 1: Convert
 
 ```bash
-python3 scripts/convert.py /path/to/book.pdf --olang zh
+python scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
 Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation, and a `source_fingerprint.json` ties the temp dir to the exact source bytes it was built from — re-running against a replaced source file aborts instead of silently reusing stale chunks. Temp dirs created before fingerprinting are adopted with a warning on first re-run.
@@ -151,8 +152,8 @@ Each chunk is translated by a fresh-context sub-agent, which means the same prop
 1. Sample 5 chunks (first, last, 3 evenly-spaced middle).
 2. Extract proper nouns and recurring domain terms; pick canonical translations.
 3. Write `<temp_dir>/glossary.json` (hand-editable schema below).
-4. Run `python3 scripts/glossary.py count-frequencies <temp_dir>` to populate per-term frequencies (ASCII terms use word-boundary regex so `cat` doesn't match `category`; CJK terms use substring; single-CJK-char terms are rejected; aliases count toward the term they belong to).
-5. For each chunk, the orchestrator calls `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md` and injects the resulting 3-column (`原文 | 别名 | 译文`) markdown table into that chunk's prompt as a hard constraint. Term selection = (terms whose source OR any alias appears in this chunk) ∪ (top-N most-frequent book-wide).
+4. Run `python scripts/glossary.py count-frequencies <temp_dir>` to populate per-term frequencies (ASCII terms use word-boundary regex so `cat` doesn't match `category`; CJK terms use substring; single-CJK-char terms are rejected; aliases count toward the term they belong to).
+5. For each chunk, the orchestrator calls `python scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md` and injects the resulting 3-column (`原文 | 别名 | 译文`) markdown table into that chunk's prompt as a hard constraint. Term selection = (terms whose source OR any alias appears in this chunk) ∪ (top-N most-frequent book-wide).
 
 ```json
 {
@@ -174,7 +175,7 @@ Edit `glossary.json` between runs to fix translations; existing `glossary.json` 
 
 ### Step 2: Translate (parallel subagents)
 
-The skill launches subagents in batches (default: 8 concurrent). Each subagent:
+The skill launches subagents in batches (default: 3 concurrent). Each subagent:
 
 1. Reads one source chunk (e.g. `chunk0042.md`)
 2. Translates to the target language
@@ -187,13 +188,13 @@ Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which
 ### Step 3: Merge & Build
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》"
+python scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》"
 ```
 
 Optional output flags:
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》" --cover cover.jpg --export-name "translated-title"
+python scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》" --cover cover.jpg --export-name "translated-title"
 ```
 
 `--cover` passes an explicit image to the EPUB Calibre step. `--export-name` creates alias copies such as `translated-title.epub` while preserving the canonical `book.*` pipeline artifacts.
@@ -211,7 +212,7 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 
 | File | Purpose |
 |------|---------|
-| `SKILL.md` | Claude Code skill definition — orchestrates the full pipeline |
+| `SKILL.md` | Codex skill definition — orchestrates the full pipeline |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks via Calibre HTMLZ |
 | `scripts/manifest.py` | Chunk manifest: SHA-256 tracking and merge validation |
 | `scripts/glossary.py` | Glossary management: per-chunk term tables for consistent terminology |
@@ -230,7 +231,8 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 
 | Problem | Solution |
 |---------|----------|
-| `Calibre ebook-convert not found` | Install Calibre and ensure `ebook-convert` is in PATH |
+| `Calibre ebook-convert not found` | Run `winget install --id calibre.calibre --exact --accept-source-agreements --accept-package-agreements`, then reopen PowerShell |
+| `Pandoc: NOT FOUND` | Run `winget install --id JohnMacFarlane.Pandoc --exact --accept-source-agreements --accept-package-agreements`; `pip install pypandoc` alone is insufficient |
 | `Manifest validation failed` | Source chunks changed since splitting — re-run `convert.py` |
 | `was created from different source bytes` | The temp dir belongs to a different source file — delete the temp dir or use a fresh `--temp-root` |
 | `Blank output` / `Empty output` | A subagent wrote a whitespace-only or empty chunk — re-run the skill to re-translate it |

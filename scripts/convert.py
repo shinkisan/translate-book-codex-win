@@ -17,27 +17,7 @@ import json
 import re
 
 from manifest import create_manifest, file_hash
-
-
-def find_calibre_convert():
-    """Find ebook-convert command from Calibre installation"""
-    possible_paths = [
-        "/Applications/calibre.app/Contents/MacOS/ebook-convert",
-        "/usr/bin/ebook-convert",
-        "/usr/local/bin/ebook-convert",
-        "ebook-convert"  # If in PATH
-    ]
-
-    for path in possible_paths:
-        try:
-            result = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                print(f"Found Calibre ebook-convert: {path}")
-                return path
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-
-    return None
+from platform_tools import find_calibre_convert
 
 
 def convert_to_htmlz(input_file, htmlz_file, calibre_path):

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Translate Book"
+  short_description: "Translate complete books with resumable Codex agents"
+  default_prompt: "Use $translate-book to translate this book into Chinese and build the output formats."

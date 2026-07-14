@@ -1,13 +1,13 @@
 ---
 name: translate-book
-description: Translate books (PDF/DOCX/EPUB) into any language using parallel sub-agents. Converts input -> Markdown chunks -> translated chunks -> HTML/DOCX/EPUB/PDF.
-allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, AskUserQuestion
-metadata: {"openclaw":{"requires":{"bins":["python3","pandoc","ebook-convert"],"anyBins":["calibre","ebook-convert"]},"homepage":"https://github.com/deusyu/translate-book"}}
+description: Translate complete PDF, DOCX, or EPUB books into another language with Codex sub-agents, resumable chunks, glossary consistency, and HTML/DOCX/EPUB/PDF output. Use when Codex is asked to translate a book or long-form document, especially on Windows.
 ---
 
 # Book Translation Skill
 
 You are a book translation assistant. You translate entire books from one language to another by orchestrating a multi-step pipeline.
+
+Run bundled Python scripts with the active interpreter (`python` on Windows; `python3` is also valid where available). Quote every path because Windows paths commonly contain spaces.
 
 ## Workflow
 
@@ -16,7 +16,7 @@ You are a book translation assistant. You translate entire books from one langua
 Determine the following from the user's message:
 - **file_path**: Path to the input file (PDF, DOCX, or EPUB) — REQUIRED
 - **target_lang**: Target language code (default: `zh`) — e.g. zh, en, ja, ko, fr, de, es
-- **concurrency**: Number of parallel sub-agents per batch (default: `8`)
+- **concurrency**: Number of parallel sub-agents per batch (default: `3`; reserve one runtime agent slot for the orchestrator)
 - **temp_root**: Optional directory under which `{filename}_temp/` should be created
 - **epub_cover**: Optional explicit cover image path for EPUB output
 - **export_name**: Optional filename stem for user-facing output aliases
@@ -29,7 +29,7 @@ If the file path is not provided, ask the user.
 Run the conversion script to produce chunks:
 
 ```bash
-python3 {baseDir}/scripts/convert.py "<file_path>" --olang "<target_lang>"
+python "{baseDir}/scripts/convert.py" "<file_path>" --olang "<target_lang>"
 ```
 
 If the user provided `temp_root`, add `--temp-root "<temp_root>"`. The temp
@@ -90,7 +90,7 @@ Otherwise:
 4. **Count frequencies** by running:
 
    ```bash
-   python3 {baseDir}/scripts/glossary.py count-frequencies "<temp_dir>"
+   python "{baseDir}/scripts/glossary.py" count-frequencies "<temp_dir>"
    ```
 
    This scans every `chunk*.md` (excluding `output_chunk*.md`), updates each term's `frequency` field, and writes back atomically.
@@ -105,7 +105,7 @@ affected.
 Run:
 
 ```bash
-python3 {baseDir}/scripts/run_state.py plan "<temp_dir>"
+python "{baseDir}/scripts/run_state.py" plan "<temp_dir>"
 ```
 
 If the user explicitly asks to apply glossary edits to outputs produced before
@@ -123,7 +123,7 @@ If `record_only_chunk_ids` is non-empty, record them before launching
 sub-agents:
 
 ```bash
-python3 {baseDir}/scripts/run_state.py record "<temp_dir>" chunk0001 chunk0002 ...
+python "{baseDir}/scripts/run_state.py" record "<temp_dir>" chunk0001 chunk0002 ...
 ```
 
 Use `translation_chunk_ids` as the work queue for Step 4. If it is empty, skip
@@ -134,7 +134,7 @@ to Step 5.
 **Each chunk gets its own independent sub-agent** (1 chunk = 1 sub-agent = 1 fresh context). This prevents context accumulation and output truncation.
 
 Launch chunks in batches to respect API rate limits:
-- Each batch: up to `concurrency` sub-agents in parallel (default: 8)
+- Each batch: up to `concurrency` sub-agents in parallel (default: 3; lower it further if fewer slots are available)
 - Wait for the current batch to complete before launching the next
 
 **Spawn each sub-agent with the following task.** Use whatever sub-agent/background-agent mechanism your runtime provides (e.g. the Agent tool, sessions_spawn, or equivalent).
@@ -155,7 +155,7 @@ Each sub-agent receives:
 **Term table assembly** — before spawning a sub-agent, run:
 
 ```bash
-python3 {baseDir}/scripts/glossary.py print-terms-for-chunk "<temp_dir>" "chunk<NNNN>.md"
+python "{baseDir}/scripts/glossary.py" print-terms-for-chunk "<temp_dir>" "chunk<NNNN>.md"
 ```
 
 Capture stdout. The CLI emits a 3-column markdown table (`原文 | 别名 | 译文`) of every term that either appears in this chunk (by source OR any alias) OR is in the top-N most-frequent terms book-wide. Inject the table as `{TERM_TABLE}` in rule #13 of the translation prompt. **If stdout is empty (no glossary, or no relevant terms), omit rule #13 from this chunk's prompt entirely** — do not leave a dangling `{TERM_TABLE}` placeholder.
@@ -163,7 +163,7 @@ Capture stdout. The CLI emits a 3-column markdown table (`原文 | 别名 | 译�
 **Neighbor context assembly** — before spawning a sub-agent, run:
 
 ```bash
-python3 {baseDir}/scripts/chunk_context.py "<temp_dir>" "chunk<NNNN>.md"
+python "{baseDir}/scripts/chunk_context.py" "<temp_dir>" "chunk<NNNN>.md"
 ```
 
 Capture stdout. The CLI emits prompt-ready read-only excerpts: the last ~300
@@ -285,7 +285,7 @@ Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translate
 1. Record successfully translated chunks from this batch before mutating the glossary:
 
    ```bash
-   python3 {baseDir}/scripts/run_state.py record "<temp_dir>" chunk0001 chunk0002 ...
+   python "{baseDir}/scripts/run_state.py" record "<temp_dir>" chunk0001 chunk0002 ...
    ```
 
    If this fails, fix the missing/empty output or state error before continuing.
@@ -293,7 +293,7 @@ Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translate
 2. Run prepare-merge:
 
    ```bash
-   python3 {baseDir}/scripts/merge_meta.py prepare-merge "<temp_dir>"
+   python "{baseDir}/scripts/merge_meta.py" prepare-merge "<temp_dir>"
    ```
 
    Capture stdout JSON. It contains four arrays:
@@ -310,7 +310,7 @@ Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translate
 
 3. **If `consumed_chunk_ids` is empty** → nothing was scanned; skip to Step 5.
 
-4. **If `consumed_chunk_ids` is non-empty but both `auto_apply` and `decisions_needed` are empty** → still pipe `{"auto_apply": [], "decisions": [], "consumed_chunk_ids": [...]}` into `apply-merge` so the hashes get recorded. **Skipping this is the bug** — no-op metas would re-scan forever otherwise.
+4. **If `consumed_chunk_ids` is non-empty but both `auto_apply` and `decisions_needed` are empty** → still submit `{"auto_apply": [], "decisions": [], "consumed_chunk_ids": [...]}` to `apply-merge` so the hashes get recorded. **Skipping this is the bug** — no-op metas would re-scan forever otherwise.
 
 5. **Otherwise, resolve each decision**:
    - Read its evidence quotes inline.
@@ -321,16 +321,15 @@ Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translate
      {"id": "d1", "kind": "alias", "variant": "Taig", "candidate_source": "Tai", "choice": "yes_alias"}
      ```
 
-6. Pipe the decisions JSON into apply-merge:
+6. Write the decisions JSON to `<temp_dir>/merge-decisions.json`, then apply it. Using a file avoids shell-specific quoting and pipe behavior on Windows:
 
-   ```bash
-   echo '{"auto_apply": [...], "decisions": [...], "consumed_chunk_ids": [...]}' \
-     | python3 {baseDir}/scripts/merge_meta.py apply-merge "<temp_dir>"
+   ```text
+   python "{baseDir}/scripts/merge_meta.py" apply-merge "<temp_dir>" --input "<temp_dir>/merge-decisions.json"
    ```
 
    Surface the summary JSON (`auto_applied`, `decisions_resolved`, `consumed_chunks`, `errors`) in your batch progress message.
 
-   **apply-merge is transactional.** If any decision is malformed (wrong choice for kind, missing fields, references a non-existent entity), the entire batch aborts with a non-zero exit and stderr details — no glossary mutation, no hashes recorded. On non-zero exit, fix the offending decision and re-pipe; `prepare-merge` will surface the same proposals because nothing was consumed.
+   **apply-merge is transactional.** If any decision is malformed (wrong choice for kind, missing fields, references a non-existent entity), the entire batch aborts with a non-zero exit and stderr details — no glossary mutation, no hashes recorded. On non-zero exit, fix the offending decision file and re-run; `prepare-merge` will surface the same proposals because nothing was consumed.
 
    **Decision order in the input list is not significant.** `apply-merge` internally dispatches entity-creating decisions before alias-attaching ones, so `yes_alias` decisions whose candidate is created by another decision in the same batch (a `use_standalone_N`, `use_variant_N`, or `promote_to_separate_entity`) succeed regardless of the order you pass them in. Alias chains (e.g. `Taighi → Taig` where `Taig → Tai` is also a pending alias decision) resolve via a fixed-point loop within the alias-attacher pass — you don't need to topo-sort or sequence chained aliases manually.
 
@@ -349,13 +348,13 @@ Also read `manifest.json` and verify:
 Then run the meta-merge observability snapshot:
 
 ```bash
-python3 {baseDir}/scripts/merge_meta.py status "<temp_dir>"
+python "{baseDir}/scripts/merge_meta.py" status "<temp_dir>"
 ```
 
 Also run the selective re-translation state snapshot:
 
 ```bash
-python3 {baseDir}/scripts/run_state.py status "<temp_dir>"
+python "{baseDir}/scripts/run_state.py" status "<temp_dir>"
 ```
 
 Surface a one-line summary in the verification report:
@@ -381,7 +380,7 @@ Translate the title to the target language. For Chinese, wrap in 书名号: `《
 Run the build script with the translated title:
 
 ```bash
-python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>" --cleanup
+python "{baseDir}/scripts/merge_and_build.py" --temp-dir "<temp_dir>" --title "<translated_title>" --cleanup
 ```
 
 If the user provided `epub_cover`, add `--cover "<epub_cover>"`. If the user

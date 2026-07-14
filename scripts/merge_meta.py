@@ -11,7 +11,7 @@ Three subcommands:
   are quarantined (warn + skip + count separately) — they don't crash the
   step.
 
-- `apply-merge <temp_dir>` — read a decisions JSON from stdin, conservatively
+- `apply-merge <temp_dir>` — read decisions JSON from ``--input`` or stdin, conservatively
   apply the auto-applies and resolved decisions to the glossary, and write
   meta content hashes into `applied_meta_hashes` for every chunk in
   `consumed_chunk_ids`. Atomic save.
@@ -475,12 +475,20 @@ def cmd_prepare_merge(temp_dir):
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
-def cmd_apply_merge(temp_dir):
-    """Read decisions JSON from stdin and apply to the glossary."""
+def cmd_apply_merge(temp_dir, input_file=None):
+    """Read decisions JSON from a UTF-8 file or stdin and apply it."""
     try:
-        decisions_doc = json.load(sys.stdin)
+        if input_file:
+            with open(input_file, 'r', encoding='utf-8') as f:
+                decisions_doc = json.load(f)
+        else:
+            decisions_doc = json.load(sys.stdin)
     except json.JSONDecodeError as e:
-        sys.stderr.write(f"error: decisions JSON on stdin is not valid: {e}\n")
+        source = input_file or "stdin"
+        sys.stderr.write(f"error: decisions JSON from {source} is not valid: {e}\n")
+        sys.exit(2)
+    except OSError as e:
+        sys.stderr.write(f"error: cannot read decisions JSON file {input_file}: {e}\n")
         sys.exit(2)
 
     if not isinstance(decisions_doc, dict):
@@ -1035,8 +1043,9 @@ def main():
     p_prep = sub.add_parser('prepare-merge', help="Scan unmerged metas; emit merge proposal")
     p_prep.add_argument('temp_dir')
 
-    p_app = sub.add_parser('apply-merge', help="Apply merge decisions from stdin")
+    p_app = sub.add_parser('apply-merge', help="Apply merge decisions from a file or stdin")
     p_app.add_argument('temp_dir')
+    p_app.add_argument('--input', help="UTF-8 decisions JSON file (default: stdin)")
 
     p_stat = sub.add_parser('status', help="Read-only observability snapshot")
     p_stat.add_argument('temp_dir')
@@ -1046,7 +1055,7 @@ def main():
     if args.cmd == 'prepare-merge':
         cmd_prepare_merge(args.temp_dir)
     elif args.cmd == 'apply-merge':
-        cmd_apply_merge(args.temp_dir)
+        cmd_apply_merge(args.temp_dir, args.input)
     elif args.cmd == 'status':
         cmd_status(args.temp_dir)
 

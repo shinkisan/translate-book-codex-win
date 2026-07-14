@@ -2,7 +2,7 @@
 
 ## Project
 
-translate-book is a Codex Skill that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. Published on ClawHub as `translate-book` and on GitHub as `deusyu/translate-book`.
+translate-book is a Windows-compatible Codex Skill that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. This port lives at `shinkisan/translate-book-codex`.
 
 ## Structure
 
@@ -24,20 +24,20 @@ Use a small file for quick checks, or the checked-in baseline book for the repos
 
 Quick smoke test:
 
-```bash
-python3 scripts/convert.py /path/to/small.pdf --olang zh
+```powershell
+python scripts/convert.py C:\path\to\small.pdf --olang zh
 # then run translation via the skill
-python3 scripts/merge_and_build.py --temp-dir <name>_temp --title "test"
+python scripts/merge_and_build.py --temp-dir <name>_temp --title "test"
 ```
 
 Full baseline test:
 
-```bash
-mkdir -p tests/.artifacts
-cd tests/.artifacts
-python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+```powershell
+New-Item -ItemType Directory -Force tests\.artifacts | Out-Null
+Set-Location tests\.artifacts
+python ..\..\scripts\convert.py ..\baselines\standard-alice\standard-alice.epub --olang zh
 # then run translation via the skill
-python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
+python ..\..\scripts\merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
 
 Verify: all output_chunk*.md files exist, manifest validation passes, output formats generate.
@@ -65,23 +65,26 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 
 - Python 3.12+ is pre-installed; no version manager needed.
 - System dependencies (Calibre, Pandoc) and pip packages (pypandoc, beautifulsoup4) are installed by the update script.
-- Unit tests only依赖 Python stdlib（不需要 pip 包或外部二进制，直接 `python3 -m unittest discover` 即可运行）。
+- Unit tests only依赖 Python stdlib（不需要 pip 包或外部二进制，直接 `python -m unittest discover` 即可运行）。
 
 ### Running tests
 
-- **Unit tests (CI-equivalent):** `python3 -m unittest discover -s tests -p 'test_*.py' -v` — runs from repo root, no setup needed.
-- **Compile check:** `python3 -m compileall scripts tests`
+- **Unit tests (CI-equivalent):** `python -m unittest discover -s tests -p 'test_*.py' -v` — runs from repo root, no setup needed.
+- **Compile check:** `python -m compileall scripts tests`
 
 ### Full pipeline integration test
 
 Run from `tests/.artifacts/` to keep generated files out of the repo root:
 
-```bash
-mkdir -p tests/.artifacts && cd tests/.artifacts
-python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+```powershell
+New-Item -ItemType Directory -Force tests\.artifacts | Out-Null
+Set-Location tests\.artifacts
+python ..\..\scripts\convert.py ..\baselines\standard-alice\standard-alice.epub --olang zh
 # Create mock output_chunk*.md files (copy source chunks) since actual translation requires LLM subagents
-for f in standard-alice_temp/chunk*.md; do cp "$f" "standard-alice_temp/output_$(basename $f)"; done
-python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
+Get-ChildItem standard-alice_temp\chunk*.md | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $_.DirectoryName ("output_" + $_.Name))
+}
+python ..\..\scripts\merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
 
 ### Known issues

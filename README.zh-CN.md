@@ -1,10 +1,10 @@
-# Rainman Translate Book
+# Windows + Codex 版 Translate Book
 
 [English](README.md) | 中文
 
-Claude Code Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
+面向 Windows 的 Codex Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
-> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为 Claude Code Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
+这个 Windows/Codex 移植版基于原 translate-book 流水线，保留可续跑的分块翻译与多格式输出，同时改为复用当前 Windows Python 解释器、自动发现 Calibre/Pandoc 的标准安装位置，并按 Codex 原生 Skill 结构安装。
 
 ---
 
@@ -20,7 +20,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 拆分为 chunk（chunk0001.md, chunk0002.md, ...）
   │  manifest.json 记录每个 chunk 的 SHA-256 hash
   ▼
-并行 subagent 翻译（默认 8 路并发）
+并行 Codex subagent 翻译（默认 3 路并发）
   │  每个 subagent：读取 1 个 chunk → 翻译 → 写入 output_chunk*.md
   │  分批执行，控制 API 速率
   ▼
@@ -34,7 +34,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 
 ## 功能特性
 
-- **并行 subagent** — 每批 8 个并发翻译器，各自独立上下文
+- **并行 subagent** — 默认每批最多 3 个并发翻译器，为编排主 agent 保留一个槽位
 - **可续跑 + 精确重译** — chunk 级续跑，并用 `run_state.json` 追踪受术语表影响的重译范围
 - **邻居上下文** — 每个 chunk 可读取相邻 chunk 的短只读摘录，用于代词和实体判断
 - **Manifest 校验** — SHA-256 hash 追踪，防止过时或损坏的输出被合并
@@ -45,48 +45,49 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 
 ## 前置要求
 
-- **Claude Code CLI** — 已安装并完成认证
-- **Calibre** — `ebook-convert` 命令可用（[下载](https://calibre-ebook.com/)）
-- **Pandoc** — 用于 HTML↔Markdown 转换（[下载](https://pandoc.org/)）
+- **Windows 10/11**，并已安装和登录 **Codex 桌面端或 CLI**
+- **Calibre** — 安装在标准的 `C:\Program Files\Calibre2` 时无需手动配置 PATH（[下载](https://calibre-ebook.com/)）
+- **Pandoc** — 标准 Windows 安装无需手动配置 PATH（[下载](https://pandoc.org/)）
 - **Python 3**，需要：
   - `pypandoc` — 必需（`pip install pypandoc`）
   - `beautifulsoup4` — 可选，用于更好的目录生成（`pip install beautifulsoup4`）
 
+使用已经核对过 Windows Package Manager ID 的命令安装外部依赖：
+
+```powershell
+winget install --id calibre.calibre --exact --accept-source-agreements --accept-package-agreements
+winget install --id JohnMacFarlane.Pandoc --exact --accept-source-agreements --accept-package-agreements
+```
+
+安装后请重新打开 PowerShell，使 PATH 变更生效。`pypandoc` 只是 Python 封装，安装它并不会安装 `pandoc.exe`。
+
 ## 快速开始
 
-### 1. 安装 Skill
+### 1. 克隆并安装 Skill
 
-**方式 A：npx（推荐）**
+在 PowerShell 中运行：
 
-```bash
-npx skills add deusyu/translate-book -a claude-code -g
+```powershell
+git clone https://github.com/shinkisan/translate-book-codex.git
+cd translate-book-codex
+.\install.ps1
 ```
 
-**方式 B：ClawHub**
+安装脚本会安装 Python 依赖，并将 `SKILL.md` 和 `scripts/` 复制到 `%CODEX_HOME%\skills\translate-book`（未设置 `CODEX_HOME` 时为 `%USERPROFILE%\.codex\skills\translate-book`）。脚本不会静默安装 Calibre 或 Pandoc；请先使用上面的 `winget` 命令单独安装，然后运行诊断：
 
-```bash
-clawhub install translate-book
+```powershell
+python .\scripts\doctor.py
 ```
 
-**方式 C：Git 克隆**
-
-```bash
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
-```
+更新现有安装可用 `.\install.ps1 -Force`；如果依赖由其他方式管理，可加 `-SkipDependencies`。
 
 
 ### 2. 翻译一本书
 
-在 Claude Code 中直接说：
+在 Codex 中直接说：
 
 ```
-translate /path/to/book.pdf to Chinese
-```
-
-或使用斜杠命令：
-
-```
-/translate-book translate /path/to/book.pdf to Japanese
+使用 translate-book skill，把 D:\Books\book.pdf 翻译成中文。
 ```
 
 Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合并、生成所有输出格式。
@@ -111,12 +112,12 @@ Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合
 
 ### 完整基准测试示例
 
-```bash
-mkdir -p tests/.artifacts
-cd tests/.artifacts
-python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+```powershell
+New-Item -ItemType Directory -Force tests\.artifacts | Out-Null
+Set-Location tests\.artifacts
+python ..\..\scripts\convert.py ..\baselines\standard-alice\standard-alice.epub --olang zh
 # 然后通过 skill 完成翻译
-python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
+python ..\..\scripts\merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
 
 ## 反馈与贡献
@@ -137,7 +138,7 @@ Pull request 不是首选贡献入口，可能会被关闭并转为 issue 继续
 ### 第一步：转换
 
 ```bash
-python3 scripts/convert.py /path/to/book.pdf --olang zh
+python scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
 Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验；`source_fingerprint.json` 则把 temp 目录与生成它的源文件字节绑定 — 若源文件被替换后重跑，会直接报错中止，而不是静默复用过时的 chunk。指纹机制之前创建的 temp 目录会在首次重跑时打印警告并被接管。
@@ -151,8 +152,8 @@ Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 ch
 1. 抽样 5 个 chunk（首章、末章、3 个均匀分布的中间章节）。
 2. 提取专有名词和反复出现的领域术语，给每个术语确定一个标准译法。
 3. 写入 `<temp_dir>/glossary.json`（schema 见下，可手动编辑）。
-4. 运行 `python3 scripts/glossary.py count-frequencies <temp_dir>`，统计每个术语在全书的出现次数（ASCII 术语用单词边界正则，避免 `cat` 误匹配 `category`；中日韩术语用子串匹配；单字汉字术语会被拒绝以防过度匹配；别名也计入所属术语的频次）。
-5. 翻译每个 chunk 之前，主 agent 调用 `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md`，将输出的 3 列（`原文 | 别名 | 译文`）markdown 表格作为硬性约束注入到该 chunk 的 prompt。术语选取 = (本 chunk 中出现原文或任一别名的术语) ∪ (全书出现频率 top-N 的术语)。
+4. 运行 `python scripts/glossary.py count-frequencies <temp_dir>`，统计每个术语在全书的出现次数（ASCII 术语用单词边界正则，避免 `cat` 误匹配 `category`；中日韩术语用子串匹配；单字汉字术语会被拒绝以防过度匹配；别名也计入所属术语的频次）。
+5. 翻译每个 chunk 之前，主 agent 调用 `python scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md`，将输出的 3 列（`原文 | 别名 | 译文`）markdown 表格作为硬性约束注入到该 chunk 的 prompt。术语选取 = (本 chunk 中出现原文或任一别名的术语) ∪ (全书出现频率 top-N 的术语)。
 
 ```json
 {
@@ -174,7 +175,7 @@ Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 ch
 
 ### 第二步：翻译（并行 subagent）
 
-Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
+Skill 分批启动 subagent（默认 3 路并发）。每个 subagent：
 
 1. 读取一个源 chunk（如 `chunk0042.md`）
 2. 翻译为目标语言
@@ -187,13 +188,13 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 ### 第三步：合并与构建
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》"
+python scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》"
 ```
 
 可选输出参数：
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》" --cover cover.jpg --export-name "译后书名"
+python scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》" --cover cover.jpg --export-name "译后书名"
 ```
 
 `--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。
@@ -211,7 +212,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 | 文件 | 用途 |
 |------|------|
-| `SKILL.md` | Claude Code Skill 定义 — 编排完整流程 |
+| `SKILL.md` | Codex Skill 定义 — 编排完整流程 |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ） |
 | `scripts/manifest.py` | Chunk manifest：SHA-256 追踪与合并校验 |
 | `scripts/glossary.py` | 术语表管理：为每个 chunk 生成专属术语对照表，保证全书译名一致 |
@@ -230,7 +231,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 | 问题 | 解决方案 |
 |------|----------|
-| `Calibre ebook-convert not found` | 安装 Calibre，确保 `ebook-convert` 在 PATH 中 |
+| `Calibre ebook-convert not found` | 运行 `winget install --id calibre.calibre --exact --accept-source-agreements --accept-package-agreements`，然后重新打开 PowerShell |
+| `Pandoc: NOT FOUND` | 运行 `winget install --id JohnMacFarlane.Pandoc --exact --accept-source-agreements --accept-package-agreements`；仅执行 `pip install pypandoc` 不够 |
 | `Manifest validation failed` | 源 chunk 在拆分后被修改 — 重新运行 `convert.py` |
 | `was created from different source bytes` | temp 目录属于另一个源文件 — 删除 temp 目录或换一个 `--temp-root` |
 | `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |

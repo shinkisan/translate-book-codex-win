@@ -13,26 +13,7 @@ import tempfile
 import shutil
 from pathlib import Path
 import re
-
-def find_calibre_convert():
-    """Find ebook-convert command from Calibre installation"""
-    possible_paths = [
-        "/Applications/calibre.app/Contents/MacOS/ebook-convert",
-        "/usr/bin/ebook-convert", 
-        "/usr/local/bin/ebook-convert",
-        "ebook-convert"  # If in PATH
-    ]
-    
-    for path in possible_paths:
-        try:
-            result = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                print(f"Found Calibre ebook-convert: {path}")
-                return path
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    
-    return None
+from platform_tools import find_calibre_convert
 
 def extract_html_metadata(html_file):
     """Extract title and author from HTML file"""

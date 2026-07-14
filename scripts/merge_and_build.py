@@ -19,6 +19,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from manifest import read_output_text, validate_for_merge
+from platform_tools import find_pandoc
 
 
 # =============================================================================
@@ -418,18 +419,14 @@ def merge_markdown_files(temp_dir):
 # =============================================================================
 
 def check_pandoc_available():
-    """Check if pandoc is available"""
-    try:
-        subprocess.run(['pandoc', '--version'], capture_output=True, check=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+    """Return the Pandoc executable path, or None when unavailable."""
+    return find_pandoc()
 
 
-def convert_with_pandoc(md_file, html_file, title, lang_attr):
+def convert_with_pandoc(md_file, html_file, title, lang_attr, pandoc_path="pandoc"):
     """Convert markdown to HTML using pandoc"""
     cmd = [
-        'pandoc', md_file, '-o', html_file,
+        pandoc_path, md_file, '-o', html_file,
         '--standalone',
         '--metadata', f'title={title}',
         '--metadata', f'lang={lang_attr}',
@@ -653,8 +650,9 @@ def convert_md_to_html(temp_dir, title, lang_cfg, author=None):
 
     # Try pandoc -> python-markdown -> basic regex
     success = False
-    if check_pandoc_available():
-        success = convert_with_pandoc(md_file, temp_html_file, title, lang_cfg['lang_attr'])
+    pandoc_path = check_pandoc_available()
+    if pandoc_path:
+        success = convert_with_pandoc(md_file, temp_html_file, title, lang_cfg['lang_attr'], pandoc_path)
 
     if not success:
         success = convert_with_python_markdown(md_file, temp_html_file, title)
@@ -922,7 +920,7 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr, cover=None):
         return None
 
     try:
-        cmd = ["python3", publish_script, html_file, "-o", output_file, "--lang", lang_attr]
+        cmd = [sys.executable, publish_script, html_file, "-o", output_file, "--lang", lang_attr]
         if cover:
             cmd.extend(["--cover", cover])
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
