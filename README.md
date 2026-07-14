@@ -4,7 +4,7 @@ English | [中文](README.zh-CN.md)
 
 Codex skill for Windows that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 
-This Windows/Codex port is based on the original translate-book pipeline. It keeps resumable chunk translation and multi-format output while using the active Windows Python interpreter, discovering standard Calibre/Pandoc installations, and installing as a native Codex skill.
+This Windows/Codex port is based on the original [deusyu/translate-book](https://github.com/deusyu/translate-book) project. It keeps resumable chunk translation and multi-format output while using the active Windows Python interpreter, discovering standard Calibre/Pandoc installations, and installing as a native Codex skill.
 
 ---
 
@@ -282,15 +282,9 @@ Recent PR discussions also surfaced several useful workflow improvements, but th
 - **Safer Calibre/Pandoc artifact cleanup (partly shipped).** Page-number and Calibre-marker cleanup is regression-tested, preserving years, chapter numbers, and non-monotonic standalone numbers. Continue improving cleanup incrementally under tests. (context: closed #5)
 - **Optional user-facing export names (shipped).** `merge_and_build.py --export-name <stem>` creates alias copies while preserving canonical pipeline artifacts as `book.html`, `book_doc.html`, `book.docx`, `book.epub`, and `book.pdf`. (context: closed #6)
 
-## Star History
-
-If you find this project helpful, please consider giving it a Star ⭐!
-
-[![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
-
 ## Sponsor
 
-If this project saves you time, consider sponsoring to keep it maintained and improved.
+If this project saves you time, please consider sponsoring the [original project](https://github.com/deusyu/translate-book) to support its continued maintenance and improvement.
 
 [![Sponsor](https://img.shields.io/github/sponsors/deusyu?label=Sponsor&logo=github)](https://github.com/sponsors/deusyu)
 

@@ -4,7 +4,7 @@
 
 面向 Windows 的 Codex Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
-这个 Windows/Codex 移植版基于原 translate-book 流水线，保留可续跑的分块翻译与多格式输出，同时改为复用当前 Windows Python 解释器、自动发现 Calibre/Pandoc 的标准安装位置，并按 Codex 原生 Skill 结构安装。
+这个 Windows/Codex 移植版基于原项目 [deusyu/translate-book](https://github.com/deusyu/translate-book)，保留可续跑的分块翻译与多格式输出，同时改为复用当前 Windows Python 解释器、自动发现 Calibre/Pandoc 的标准安装位置，并按 Codex 原生 Skill 结构安装。
 
 ---
 
@@ -282,15 +282,9 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 - **更安全的 Calibre/Pandoc 噪声清理（部分已发布）**。页码和 Calibre marker 清理已有回归测试保护，保留年份、章节编号和非单调独立数字。后续清理规则继续在测试下增量增加。(context: closed #5)
 - **可选的面向用户导出文件名（已发布）**。`merge_and_build.py --export-name <stem>` 生成 alias/copy，同时流水线内部 canonical 产物仍保持 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf`。(context: closed #6)
 
-## Star History
-
-如果这个项目对您有帮助，请考虑为其点亮一颗 Star ⭐！
-
-[![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
-
 ## 赞助
 
-如果这个项目帮你节省了时间，欢迎赞助支持后续维护和改进。
+如果这个项目帮你节省了时间，欢迎去[原项目](https://github.com/deusyu/translate-book)赞助支持后续维护和改进。
 
 [![Sponsor](https://img.shields.io/github/sponsors/deusyu?label=Sponsor&logo=github)](https://github.com/sponsors/deusyu)
 
