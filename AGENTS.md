@@ -2,7 +2,7 @@
 
 ## Project
 
-translate-book is a Windows-compatible Codex Skill that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. This port lives at `shinkisan/translate-book-codex`.
+translate-book is a Windows-compatible Codex Skill that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. This port lives at `shinkisan/translate-book-codex-win`.
 
 ## Structure
 

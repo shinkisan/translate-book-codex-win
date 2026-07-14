@@ -68,7 +68,7 @@ Open a new PowerShell window after installation so PATH changes are visible. `py
 Run in PowerShell:
 
 ```powershell
-git clone https://github.com/shinkisan/translate-book-codex.git
+git clone https://github.com/shinkisan/translate-book-codex-win.git
 cd translate-book-codex
 .\install.ps1
 ```

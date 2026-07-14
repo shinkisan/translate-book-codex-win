@@ -68,7 +68,7 @@ winget install --id JohnMacFarlane.Pandoc --exact --accept-source-agreements --a
 在 PowerShell 中运行：
 
 ```powershell
-git clone https://github.com/shinkisan/translate-book-codex.git
+git clone https://github.com/shinkisan/translate-book-codex-win.git
 cd translate-book-codex
 .\install.ps1
 ```
