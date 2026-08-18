@@ -6,6 +6,10 @@ Codex skill for Windows that translates entire books (PDF/DOCX/EPUB) into any la
 
 This Windows/Codex port is based on the original [deusyu/translate-book](https://github.com/deusyu/translate-book) project. It keeps resumable chunk translation and multi-format output while using the active Windows Python interpreter, discovering standard Calibre/Pandoc installations, and installing as a native Codex skill.
 
+<p align="center">
+  <img src="assets/poster/translate-book-poster-en.jpg" alt="translate-book — a whole book, translated in parallel: split into chunks, translated by 8 parallel sub-agents, verified and merged into a complete book" width="480">
+</p>
+
 ---
 
 ## How It Works
@@ -81,12 +85,18 @@ python .\scripts\doctor.py
 
 Use `.\install.ps1 -Force` to update an existing installation, or `-SkipDependencies` when dependencies are already managed elsewhere.
 
-
 ### 2. Translate a book
 
-In Codex, say:
+In the Codex CLI or IDE extension, enter:
 
+```text
+$translate-book Translate /path/to/book.pdf into Chinese.
 ```
+Codex can also select the skill automatically when your request matches its description.
+
+Or use a natural-language request with a Windows path:
+
+```text
 Translate D:\Books\book.pdf to Chinese with the translate-book skill.
 ```
 

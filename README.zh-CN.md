@@ -6,6 +6,10 @@
 
 这个 Windows/Codex 移植版基于原项目 [deusyu/translate-book](https://github.com/deusyu/translate-book)，保留可续跑的分块翻译与多格式输出，同时改为复用当前 Windows Python 解释器、自动发现 Calibre/Pandoc 的标准安装位置，并按 Codex 原生 Skill 结构安装。
 
+<p align="center">
+  <img src="assets/poster/translate-book-poster.jpg" alt="translate-book 项目海报——一整本书,并行翻译:拆块后由 8 个并行子代理同时翻译,校验合并成完整译本" width="480">
+</p>
+
 ---
 
 ## 工作原理
@@ -81,12 +85,18 @@ python .\scripts\doctor.py
 
 更新现有安装可用 `.\install.ps1 -Force`；如果依赖由其他方式管理，可加 `-SkipDependencies`。
 
-
 ### 2. 翻译一本书
 
-在 Codex 中直接说：
+在 Codex CLI 或 IDE 扩展中输入：
 
+```text
+$translate-book Translate /path/to/book.pdf into Chinese.
 ```
+当请求与 Skill 描述匹配时，Codex 也可以自动选择该 Skill。
+
+也可以直接使用带 Windows 路径的自然语言请求：
+
+```text
 使用 translate-book skill，把 D:\Books\book.pdf 翻译成中文。
 ```
 
